@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Get,
   Headers,
   HttpCode,
   HttpStatus,
@@ -19,10 +20,12 @@ import { AppConfigService } from '../../../config/config.service';
 import { CurrentUser } from '../../auth/decorators/current-user.decorator';
 import { Public } from '../../auth/decorators/public.decorator';
 import { AuthenticatedUser } from '../../auth/types/authenticated-user.type';
+import type { InvoiceListItemDto } from '../dto/invoice-list-item.dto';
 import {
   IframeSessionResponse,
   TranzilaBillingService,
 } from '../tranzila/tranzila-billing.service';
+import { TranzilaInvoicesService } from '../tranzila/tranzila-invoices.service';
 import {
   RenewalRunSummary,
   TranzilaRenewalRunner,
@@ -70,6 +73,7 @@ export class TranzilaBillingController {
   constructor(
     private readonly tranzila: TranzilaBillingService,
     private readonly runner: TranzilaRenewalRunner,
+    private readonly invoices: TranzilaInvoicesService,
     private readonly config: AppConfigService,
   ) {}
 
@@ -156,6 +160,25 @@ export class TranzilaBillingController {
   @ApiOkResponse({ description: 'ok=true' })
   async resume(@CurrentUser() user: AuthenticatedUser): Promise<{ ok: true }> {
     return this.tranzila.resumeSubscription({ userId: user.id });
+  }
+
+  @Get('invoices')
+  @ApiBearerAuth('supabase-jwt')
+  @ApiOperation({
+    summary: 'List the user\'s Tranzila payment history',
+    description:
+      'Returns successful renewal charges from billing_payment_attempts, ' +
+      'mapped to the InvoiceListItemDto shape the FE table already renders. ' +
+      'pdfUrl is null on every row — formal tax invoices (חשבוניות מס) are ' +
+      'emailed by Tranzila per transaction when "Auto-document" is enabled ' +
+      'on the merchant terminal. Future work will attach Tranzila documents ' +
+      'API retrieval keys here.',
+  })
+  @ApiOkResponse({ description: 'Renewal rows for the settings invoice table.' })
+  async listInvoices(
+    @CurrentUser() user: AuthenticatedUser,
+  ): Promise<InvoiceListItemDto[]> {
+    return this.invoices.listForUser(user.id);
   }
 
   @Post('change-plan')
