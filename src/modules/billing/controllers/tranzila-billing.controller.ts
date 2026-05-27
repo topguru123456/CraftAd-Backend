@@ -142,6 +142,22 @@ export class TranzilaBillingController {
     });
   }
 
+  @Post('resume')
+  @ApiBearerAuth('supabase-jwt')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Undo a pending cancellation',
+    description:
+      'Clears cancel_at_period_end on user_metadata so the renewal runner will ' +
+      'charge the next period normally. Used when a user changes their mind during ' +
+      'the grace window, or when a canceled user picks a plan again from the ' +
+      'pricing grid (which atomically resumes + changes plan). Idempotent.',
+  })
+  @ApiOkResponse({ description: 'ok=true' })
+  async resume(@CurrentUser() user: AuthenticatedUser): Promise<{ ok: true }> {
+    return this.tranzila.resumeSubscription({ userId: user.id });
+  }
+
   @Post('change-plan')
   @ApiBearerAuth('supabase-jwt')
   @HttpCode(HttpStatus.OK)

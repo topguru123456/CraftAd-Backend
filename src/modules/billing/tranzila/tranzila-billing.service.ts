@@ -326,6 +326,13 @@ export class TranzilaBillingService {
     return { ok: true, periodEndUnix };
   }
 
+  /* Undo a pending cancellation. Clears cancel_at_period_end so the
+   * renewal runner will charge the next period as normal. Idempotent. */
+  async resumeSubscription(input: { userId: string }): Promise<{ ok: true }> {
+    await this.syncService.resumeTranzilaSubscription({ userId: input.userId });
+    return { ok: true };
+  }
+
   /* User picks a new plan or cycle. No charge today, no proration — the
    * next renewal uses the new amount on the existing period_end schedule.
    * UI must say this clearly. */

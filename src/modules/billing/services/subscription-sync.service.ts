@@ -229,6 +229,16 @@ export class SubscriptionSyncService {
     this.logger.log(`tranzila cancel-at-period-end set: user=${input.userId}`);
   }
 
+  /* User changed their mind during the grace window — clear the flag.
+   * The renewal runner will charge them as normal on the next sweep.
+   * Idempotent — calling on a non-canceled user writes the same false. */
+  async resumeTranzilaSubscription(input: { userId: string }): Promise<void> {
+    await this.patchUserMetadata(input.userId, {
+      cancel_at_period_end: false,
+    });
+    this.logger.log(`tranzila resume: user=${input.userId}`);
+  }
+
   /* In-app plan change. No proration in v1 — the next renewal uses the
    * new amount on the existing period_end schedule. */
   async updateTranzilaPlan(input: {
