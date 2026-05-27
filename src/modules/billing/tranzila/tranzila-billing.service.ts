@@ -140,6 +140,8 @@ export class TranzilaBillingService {
       tranmode: 'VK',
       thtk,
       new_process: '1',
+      /* Hebrew iframe UI (per Tranzila docs: lang=il for Israel). */
+      lang: 'il',
       /* Wallet buttons. Merchant confirmed these flags work (§7 Q2);
        * acquirer-side enablement on the charge terminal is the
        * merchant's responsibility. */
