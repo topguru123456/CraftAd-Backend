@@ -308,3 +308,55 @@ model VideoGeneration {
   @@index([status])
   @@map("video_generations")
 }
+
+// Tranzila billing audit log. Every payment-related action — trial J5
+// verify, renewal token charge, update-card re-tokenize — writes one row
+// here. The handoff doc was clear: user_metadata is too thin to be the
+// only record of "what charges happened to this user when and why."
+//
+// idempotencyKey is the unique anti-double-write guard. Composition rules
+// (in app code):
+//   verify   → "<userId>:verify:<tranzilaIndex>"
+//   renewal  → "<userId>:renewal:<periodEndIso>"
+//   update_card → "<userId>:update_card:<tranzilaIndex>"
+// The renewal key uses periodEnd rather than tranzilaIndex so two
+// runner invocations that race on the same due-user produce the same key
+// → the second INSERT 23505s, the second charge is never sent.
+//
+// amount is minor units (agorot). ₪129 → 12900. Conversion to Tranzila's
+// "sum" param (which takes decimal shekels) happens in the client.
+//
+// userId is NOT a Prisma relation because there is no public.users table
+// in this schema — identity lives in auth.users (Supabase). The FK is
+// enforced at the application layer.
+enum BillingPaymentAttemptKind {
+  verify
+  renewal
+  update_card
+}
+
+model BillingPaymentAttempt {
+  id              String                     @id @default(uuid()) @db.Uuid
+  userId          String                     @map("user_id") @db.Uuid
+  kind            BillingPaymentAttemptKind
+  amount          Int
+  currency        String                     @default("ILS")
+  // Set on renewal rows so the (user, period) idempotency holds even when
+  // a row never gets a tranzilaIndex (e.g. transient HTTP failure).
+  periodEnd       DateTime?                  @map("period_end")
+  // Tranzila's transaction id from the notify callback or token-charge
+  // response. Required for any later credit/refund operation.
+  tranzilaIndex   String?                    @map("tranzila_index")
+  responseCode    String?                    @map("response_code")
+  // Full urlencoded response body (or relevant slice) captured for audit.
+  // Truncate in app code if > 4KB.
+  rawResponse     String?                    @map("raw_response")
+  success         Boolean                    @default(false)
+  idempotencyKey  String                     @unique @map("idempotency_key")
+  errorMessage    String?                    @map("error_message")
+  createdAt       DateTime                   @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@index([kind, createdAt])
+  @@map("billing_payment_attempts")
+}

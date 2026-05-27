@@ -88,6 +88,36 @@ export const envSchema = z.object({
   STRIPE_PRICE_SCALE_MONTHLY:   emptyAsUndefined(z.string().min(1).optional()),
   STRIPE_PRICE_PRO_MONTHLY:     emptyAsUndefined(z.string().min(1).optional()),
   APP_PUBLIC_URL: emptyAsUndefined(z.string().url().optional()),
+
+  // ── Tranzila billing (classic iframe + token renewals) ────────────
+  //
+  // BILLING_PROVIDER         Routes /billing/* through Stripe or Tranzila.
+  //                          Defaults to 'stripe' so existing deployments
+  //                          keep working; flip to 'tranzila' at cutover.
+  // TRANZILA_TERMINAL_CHARGE Iframe-facing terminal (handles card capture
+  //                          + Apple Pay + Google Pay). e.g. 'fxpdply123'.
+  // TRANZILA_TERMINAL_TOKEN  Server-side token-charge terminal used by the
+  //                          renewal runner via tranzila31tk.cgi.
+  //                          e.g. 'fxpdply123tok'.
+  // TRANZILA_PW_CHARGE       TranzilaPW for the charge terminal. Server-
+  //                          only; never sent to the FE.
+  // TRANZILA_PW_TOKEN        TranzilaPW for the token terminal. Server-
+  //                          only; never sent to the FE.
+  // TRANZILA_ADMIN_SECRET    Bearer token required on
+  //                          POST /billing/tranzila/run-renewals. Phase 1
+  //                          uses this for manual curl triggers; Phase 5
+  //                          Cloud Scheduler uses the same value.
+  //
+  // All Tranzila vars are optional at the schema level so the API still
+  // boots with provider=stripe. Tranzila services throw at instantiation
+  // when provider=tranzila and a required value is missing — same pattern
+  // as the Stripe keys above.
+  BILLING_PROVIDER:         z.enum(['stripe', 'tranzila']).default('stripe'),
+  TRANZILA_TERMINAL_CHARGE: emptyAsUndefined(z.string().min(1).optional()),
+  TRANZILA_TERMINAL_TOKEN:  emptyAsUndefined(z.string().min(1).optional()),
+  TRANZILA_PW_CHARGE:       emptyAsUndefined(z.string().min(1).optional()),
+  TRANZILA_PW_TOKEN:        emptyAsUndefined(z.string().min(1).optional()),
+  TRANZILA_ADMIN_SECRET:    emptyAsUndefined(z.string().min(16).optional()),
 });
 
 export type Env = z.infer<typeof envSchema>;
