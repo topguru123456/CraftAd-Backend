@@ -8,6 +8,7 @@ import { StripeClientService } from './services/stripe-client.service';
 import { SubscriptionSyncService } from './services/subscription-sync.service';
 import { TranzilaClassicClient } from './tranzila/tranzila-classic.client';
 import { TranzilaBillingService } from './tranzila/tranzila-billing.service';
+import { TranzilaRenewalRunner } from './tranzila/tranzila-renewal-runner.service';
 
 /* Billing module — Stripe + Tranzila side by side during migration.
  *
@@ -39,6 +40,7 @@ import { TranzilaBillingService } from './tranzila/tranzila-billing.service';
     SubscriptionSyncService,
     TranzilaClassicClient,
     TranzilaBillingService,
+    TranzilaRenewalRunner,
   ],
 })
 export class BillingModule {}

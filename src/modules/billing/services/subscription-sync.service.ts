@@ -160,6 +160,88 @@ export class SubscriptionSyncService {
     );
   }
 
+  /* Renewal charge succeeded → advance period_end and mark active.
+   *
+   * Called by TranzilaRenewalRunner after a Response=000 from
+   * tranzila31tk.cgi. Only the per-charge fields move; plan_id and
+   * cycle stay put (those change via updateTranzilaPlan). */
+  async writeFromTranzilaCharge(input: {
+    userId: string;
+    status: 'active' | 'past_due';
+    periodEndUnix: number;
+    lastIndex: string | null;
+    lastConfirmationCode: string | null;
+  }): Promise<void> {
+    await this.patchUserMetadata(input.userId, {
+      subscription_status: input.status,
+      subscription_current_period_end: input.periodEndUnix,
+      tranzila_last_index: input.lastIndex,
+      tranzila_last_confirmation_code: input.lastConfirmationCode,
+    });
+    this.logger.log(
+      `tranzila renewal written: user=${input.userId} status=${input.status} ` +
+        `period_end=${new Date(input.periodEndUnix * 1000).toISOString()}`,
+    );
+  }
+
+  /* Terminal renewal failure → flip to past_due. The renewal runner
+   * keeps trying on subsequent sweeps; the FE renders an update-card
+   * banner driven off subscription_status='past_due'. */
+  async markTranzilaPastDue(input: {
+    userId: string;
+    lastErrorCode: string;
+  }): Promise<void> {
+    await this.patchUserMetadata(input.userId, {
+      subscription_status: 'past_due',
+      tranzila_last_error_code: input.lastErrorCode,
+    });
+    this.logger.warn(
+      `tranzila past_due: user=${input.userId} lastErrorCode=${input.lastErrorCode}`,
+    );
+  }
+
+  /* User canceled and their current_period_end has now passed → finalize
+   * the cancellation. Clears the per-subscription keys but keeps the
+   * token around in case they resubscribe (one less iframe round-trip). */
+  async clearTranzilaSubscription(input: { userId: string }): Promise<void> {
+    await this.patchUserMetadata(input.userId, {
+      subscription_status: 'canceled',
+      subscription_plan_id: null,
+      subscription_cycle: null,
+      subscription_id: null,
+      subscription_current_period_end: null,
+      cancel_at_period_end: false,
+    });
+    this.logger.log(`tranzila subscription cleared: user=${input.userId}`);
+  }
+
+  /* User clicked Cancel in-app. Sets the grace flag; access continues
+   * until the existing period_end, at which point the renewal runner
+   * sweeps and clearTranzilaSubscription() finalizes. Idempotent — calling
+   * twice writes the same value. */
+  async setTranzilaCancelAtPeriodEnd(input: { userId: string }): Promise<void> {
+    await this.patchUserMetadata(input.userId, {
+      cancel_at_period_end: true,
+    });
+    this.logger.log(`tranzila cancel-at-period-end set: user=${input.userId}`);
+  }
+
+  /* In-app plan change. No proration in v1 — the next renewal uses the
+   * new amount on the existing period_end schedule. */
+  async updateTranzilaPlan(input: {
+    userId: string;
+    planId: string;
+    cycle: string;
+  }): Promise<void> {
+    await this.patchUserMetadata(input.userId, {
+      subscription_plan_id: input.planId,
+      subscription_cycle: input.cycle,
+    });
+    this.logger.log(
+      `tranzila plan changed: user=${input.userId} plan=${input.planId}/${input.cycle}`,
+    );
+  }
+
   /* Clear all subscription_* keys. Called when a Subscription is fully
    * deleted (canceled at period end + period rolled over). The FE
    * `useCurrentPlan` defaults back to 'starter' / 'monthly' when these

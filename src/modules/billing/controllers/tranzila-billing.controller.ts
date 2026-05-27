@@ -1,9 +1,11 @@
 import {
   Body,
   Controller,
+  Headers,
   HttpCode,
   HttpStatus,
   Post,
+  UnauthorizedException,
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
@@ -13,6 +15,7 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { IsIn } from 'class-validator';
+import { AppConfigService } from '../../../config/config.service';
 import { CurrentUser } from '../../auth/decorators/current-user.decorator';
 import { Public } from '../../auth/decorators/public.decorator';
 import { AuthenticatedUser } from '../../auth/types/authenticated-user.type';
@@ -20,18 +23,22 @@ import {
   IframeSessionResponse,
   TranzilaBillingService,
 } from '../tranzila/tranzila-billing.service';
+import {
+  RenewalRunSummary,
+  TranzilaRenewalRunner,
+} from '../tranzila/tranzila-renewal-runner.service';
 
-/* Phase 1 Step 2b endpoints — just enough to land a trial signup
- * end-to-end. Renewal-runner / cancel / change-plan / update-card
- * arrive in Step 2c.
+/* Tranzila billing surface. Wire contract is docs/billing-tranzila.md.
  *
- *   POST /billing/tranzila/handshake (JWT)
- *     Mints an iframe session — thtk + every form field the FE needs.
+ *   POST /billing/tranzila/handshake    (JWT)  — mint an iframe session
+ *   POST /billing/tranzila/notify       (Public, urlencoded) — Tranzila → BE
+ *   POST /billing/tranzila/cancel       (JWT)  — grace-cancel until period end
+ *   POST /billing/tranzila/change-plan  (JWT)  — switch plan/cycle (next renewal)
+ *   POST /billing/tranzila/run-renewals (admin shared-secret) — sweep + charge
  *
- *   POST /billing/tranzila/notify (@Public, urlencoded)
- *     Tranzila → BE callback when the iframe finishes. Idempotent.
- *
- * Wire contract: docs/billing-tranzila.md §3.1 + §4.
+ * update-card is the same handshake endpoint called with kind='update_card';
+ * no dedicated route needed. The renewal runner picks up the new token
+ * on the next sweep automatically.
  */
 
 const PLAN_IDS = ['starter', 'scale', 'pro'] as const;
@@ -49,10 +56,22 @@ class InitIframeDto {
   kind!: (typeof IFRAME_KINDS)[number];
 }
 
+class ChangePlanDto {
+  @IsIn(PLAN_IDS as unknown as string[])
+  planId!: (typeof PLAN_IDS)[number];
+
+  @IsIn(BILLING_CYCLES as unknown as string[])
+  cycle!: (typeof BILLING_CYCLES)[number];
+}
+
 @ApiTags('billing-tranzila')
 @Controller('billing/tranzila')
 export class TranzilaBillingController {
-  constructor(private readonly tranzila: TranzilaBillingService) {}
+  constructor(
+    private readonly tranzila: TranzilaBillingService,
+    private readonly runner: TranzilaRenewalRunner,
+    private readonly config: AppConfigService,
+  ) {}
 
   @Post('handshake')
   @ApiBearerAuth('supabase-jwt')
@@ -98,5 +117,71 @@ export class TranzilaBillingController {
   @ApiExcludeEndpoint()
   async notify(@Body() body: Record<string, string>): Promise<{ ok: boolean }> {
     return this.tranzila.handleNotify(body ?? {});
+  }
+
+  @Post('cancel')
+  @ApiBearerAuth('supabase-jwt')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Cancel — grace until current period end',
+    description:
+      'Sets cancel_at_period_end=true on user_metadata. The user retains access ' +
+      'until subscription_current_period_end. The renewal runner then sweeps and ' +
+      'finalizes the cancellation (subscription_status="canceled", plan keys cleared). ' +
+      'Idempotent — calling twice is a no-op.',
+  })
+  @ApiOkResponse({
+    description: 'ok=true plus the period_end timestamp the FE should show the user.',
+  })
+  async cancel(
+    @CurrentUser() user: AuthenticatedUser,
+  ): Promise<{ ok: true; periodEndUnix: number | null }> {
+    return this.tranzila.cancelSubscription({
+      userId: user.id,
+      userMetadata: user.metadata ?? {},
+    });
+  }
+
+  @Post('change-plan')
+  @ApiBearerAuth('supabase-jwt')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Change plan or cycle — applies on next renewal',
+    description:
+      'Updates subscription_plan_id and subscription_cycle on user_metadata. ' +
+      'No charge today, no proration — the next renewal at the existing ' +
+      'subscription_current_period_end uses the new amount. UI must communicate ' +
+      'this clearly to avoid confusing the user about when the new price hits.',
+  })
+  @ApiOkResponse({ description: 'ok=true' })
+  async changePlan(
+    @Body() dto: ChangePlanDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ): Promise<{ ok: true }> {
+    return this.tranzila.changePlan({
+      userId: user.id,
+      planId: dto.planId,
+      cycle: dto.cycle,
+    });
+  }
+
+  /* Renewal sweep. Admin-only — Phase 1 fires this from curl during dev,
+   * Phase 5 wires Cloud Scheduler with the same Authorization header.
+   *
+   * @Public skips the JwtAuthGuard; the inline TRANZILA_ADMIN_SECRET
+   * check is the only gate. The secret must be a long random string
+   * (env validates min-length 16). */
+  @Post('run-renewals')
+  @Public()
+  @HttpCode(HttpStatus.OK)
+  @ApiExcludeEndpoint()
+  async runRenewals(
+    @Headers('authorization') auth: string | undefined,
+  ): Promise<RenewalRunSummary> {
+    const expected = this.config.require('TRANZILA_ADMIN_SECRET');
+    if (!auth || auth !== `Bearer ${expected}`) {
+      throw new UnauthorizedException('Invalid or missing admin secret');
+    }
+    return this.runner.runRenewals();
   }
 }

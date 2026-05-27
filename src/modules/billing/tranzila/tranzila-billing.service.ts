@@ -308,6 +308,37 @@ export class TranzilaBillingService {
     return { ok: true };
   }
 
+  /* User clicks Cancel in-app. Sets cancel_at_period_end=true on
+   * user_metadata; access continues until the existing period_end. The
+   * renewal runner sees the flag on the next sweep after period_end
+   * and finalizes via clearTranzilaSubscription. Idempotent. */
+  async cancelSubscription(input: {
+    userId: string;
+    userMetadata: Record<string, unknown>;
+  }): Promise<{ ok: true; periodEndUnix: number | null }> {
+    await this.syncService.setTranzilaCancelAtPeriodEnd({ userId: input.userId });
+    const periodEnd = input.userMetadata.subscription_current_period_end;
+    const periodEndUnix =
+      typeof periodEnd === 'number' && Number.isFinite(periodEnd) ? periodEnd : null;
+    return { ok: true, periodEndUnix };
+  }
+
+  /* User picks a new plan or cycle. No charge today, no proration — the
+   * next renewal uses the new amount on the existing period_end schedule.
+   * UI must say this clearly. */
+  async changePlan(input: {
+    userId: string;
+    planId: 'starter' | 'scale' | 'pro';
+    cycle: 'monthly' | 'yearly';
+  }): Promise<{ ok: true }> {
+    await this.syncService.updateTranzilaPlan({
+      userId: input.userId,
+      planId: input.planId,
+      cycle: input.cycle,
+    });
+    return { ok: true };
+  }
+
   private isIframeKind(value: string | undefined): value is IframeKind {
     return value === 'trial' || value === 'update_card';
   }
