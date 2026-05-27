@@ -125,6 +125,8 @@ export class SubscriptionSyncService {
     tranzilaToken: string;
     tranzilaTokenExpmonth: string;
     tranzilaTokenExpyear: string;
+    /** Last 4 digits of the PAN, extracted from notify's masked ccno. Null if Tranzila didn't send ccno. */
+    cardLast4: string | null;
     lastTranzilaIndex: string | null;
     lastConfirmationCode: string | null;
     kind: 'trial' | 'update_card';
@@ -136,6 +138,7 @@ export class SubscriptionSyncService {
       tranzila_token: input.tranzilaToken,
       tranzila_token_expmonth: input.tranzilaTokenExpmonth || null,
       tranzila_token_expyear: input.tranzilaTokenExpyear || null,
+      tranzila_card_last4: input.cardLast4,
       tranzila_last_index: input.lastTranzilaIndex,
       tranzila_last_confirmation_code: input.lastConfirmationCode,
     };

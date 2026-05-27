@@ -295,6 +295,7 @@ export class TranzilaBillingService {
       tranzilaToken: tokenReturned,
       tranzilaTokenExpmonth: expmonth ?? '',
       tranzilaTokenExpyear: expyear ?? '',
+      cardLast4: extractLast4(body.ccno),
       lastTranzilaIndex: tranzilaIndex ?? null,
       lastConfirmationCode: confirmationCode ?? null,
       kind: claimedKind,
@@ -378,4 +379,14 @@ export class TranzilaBillingService {
     const json = JSON.stringify(redacted);
     return json.length > 4000 ? `${json.slice(0, 4000)}…` : json;
   }
+}
+
+/* Pull the visible last-4 out of Tranzila's masked ccno (e.g. "4580****4580"
+ * or "************4580"). Strips non-digits, takes the trailing 4. Returns
+ * null if Tranzila didn't send ccno or it had fewer than 4 digits visible. */
+function extractLast4(ccno: string | undefined): string | null {
+  if (!ccno) return null;
+  const digits = ccno.replace(/\D+/g, '');
+  if (digits.length < 4) return null;
+  return digits.slice(-4);
 }
