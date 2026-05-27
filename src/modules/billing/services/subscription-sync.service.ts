@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { randomUUID } from 'node:crypto';
 import Stripe from 'stripe';
 import { AppConfigService } from '../../../config/config.service';
 import { StripeClientService } from './stripe-client.service';
@@ -89,6 +90,73 @@ export class SubscriptionSyncService {
 
     this.logger.log(
       `metadata written: user=${userId} plan=${planId} cycle=${cycle} status=${subscription.status}`,
+    );
+  }
+
+  /* Tranzila tokenize → metadata writer.
+   *
+   * Sibling of writeFromSubscription, but for the Tranzila path. Called
+   * by TranzilaBillingService.handleNotify on a successful Response=000
+   * notify with a TranzilaTK present (i.e. iframe tokenize succeeded).
+   *
+   * Two kinds:
+   *   'trial'       — first tokenize at signup. Sets subscription_status
+   *                   to 'trialing', mints a new subscription_id, sets
+   *                   current_period_end to now+7 days.
+   *   'update_card' — replacement card during an active subscription.
+   *                   Replaces the stored token + exp; subscription
+   *                   state (plan, cycle, status, period_end) is left
+   *                   untouched so the next renewal charges the new
+   *                   card on the existing schedule.
+   *
+   * Metadata keys written:
+   *   billing_provider                    — 'tranzila' (mirror, helpful for the FE)
+   *   tranzila_token                      — TranzilaTK from the notify
+   *   tranzila_token_expmonth/_expyear    — MM / YY for tranzila31tk.cgi
+   *   tranzila_last_index                 — Tranzila transaction id (for refund/audit)
+   *   tranzila_last_confirmation_code     — auth code, for invoice display
+   *   subscription_*                      — see kind branches above
+   *
+   * Idempotent: re-firing with the same TranzilaTK overwrites the same
+   * keys with the same values; the audit row's unique idempotencyKey
+   * keeps duplicate notifies from creating duplicate attempt rows. */
+  async writeFromTranzilaTokenized(input: {
+    userId: string;
+    tranzilaToken: string;
+    tranzilaTokenExpmonth: string;
+    tranzilaTokenExpyear: string;
+    lastTranzilaIndex: string | null;
+    lastConfirmationCode: string | null;
+    kind: 'trial' | 'update_card';
+    planId: string;
+    cycle: string;
+  }): Promise<void> {
+    const patch: Record<string, unknown> = {
+      billing_provider: 'tranzila',
+      tranzila_token: input.tranzilaToken,
+      tranzila_token_expmonth: input.tranzilaTokenExpmonth || null,
+      tranzila_token_expyear: input.tranzilaTokenExpyear || null,
+      tranzila_last_index: input.lastTranzilaIndex,
+      tranzila_last_confirmation_code: input.lastConfirmationCode,
+    };
+
+    if (input.kind === 'trial') {
+      /* 7-day no-charge trial. current_period_end in UNIX seconds matches
+       * Stripe's format so useSubscriptionInfo on the FE doesn't branch. */
+      const TRIAL_DAYS = 7;
+      const periodEnd = Math.floor(Date.now() / 1000) + TRIAL_DAYS * 86400;
+      patch.subscription_id = `tz_${randomUUID()}`;
+      patch.subscription_plan_id = input.planId;
+      patch.subscription_cycle = input.cycle;
+      patch.subscription_status = 'trialing';
+      patch.subscription_current_period_end = periodEnd;
+      patch.cancel_at_period_end = false;
+    }
+
+    await this.patchUserMetadata(input.userId, patch);
+    this.logger.log(
+      `tranzila tokenize written: user=${input.userId} kind=${input.kind} ` +
+        `plan=${input.planId}/${input.cycle}`,
     );
   }
 

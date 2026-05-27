@@ -59,6 +59,13 @@ async function bootstrap(): Promise<void> {
   // req.rawBody via @RawBody() to verify the signature.
   app.useBodyParser('json', { limit: '20mb', rawBody: true });
 
+  /* Tranzila's classic iframe POSTs the notify callback as
+   * application/x-www-form-urlencoded (docs/billing-tranzila.md §4.3).
+   * Notify bodies are small (~1-2KB) — 32KB is generous. extended:false
+   * forces the query-string library parser, which is sufficient for
+   * Tranzila's flat key=value bodies and rejects nested object syntax. */
+  app.useBodyParser('urlencoded', { limit: '32kb', extended: false });
+
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
