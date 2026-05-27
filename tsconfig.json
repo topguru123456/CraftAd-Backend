@@ -1,0 +1,55 @@
+{
+  "compilerOptions": {
+    /* Build target + module system — CommonJS because NestJS' default
+     * builder (webpack via nest-cli) and Node's require() expect it. */
+    "module": "commonjs",
+    "target": "ES2022",
+    "rootDir": "./src",
+    "outDir": "./dist",
+
+    /* Path aliases (TS 5+ syntax — no baseUrl needed, paths are
+     * resolved relative to this tsconfig.json). baseUrl is deprecated
+     * in TS 5.5 and removed in TS 7.0; relying on the modern behavior
+     * future-proofs us. None of our current imports actually use these
+     * aliases yet — they're declared so the dev experience is
+     * consistent if/when we adopt them. */
+    "paths": {
+      "@/*": ["./src/*"],
+      "@common/*": ["./src/common/*"],
+      "@config/*": ["./src/config/*"]
+    },
+
+    /* Strictness — `strict: true` already implies strictNullChecks,
+     * noImplicitAny, strictBindCallApply, noImplicitThis, alwaysStrict,
+     * strictFunctionTypes, strictPropertyInitialization, and
+     * useUnknownInCatchVariables. Listing them individually triggers
+     * "redundant flag" warnings in TS 5.7. */
+    "strict": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+
+    /* Decorators — required by NestJS. */
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+
+    /* Interop with CJS deps (express, dotenv, etc.) and JSON imports. */
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+
+    /* DX / build perf.
+     *
+     * `incremental` is intentionally OFF. With it on, tsc writes a
+     * .tsbuildinfo cache; if dist/ is deleted manually (`rm -rf dist`)
+     * but the cache survives, tsc silently skips emit on the next
+     * build because the cache says "nothing changed." nest-cli inherits
+     * this and exits 0 with zero output. Clean builds are ~3s — not
+     * worth the silent-failure trap. */
+    "declaration": true,
+    "removeComments": true,
+    "sourceMap": true,
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist"]
+}

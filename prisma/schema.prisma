@@ -1,0 +1,310 @@
+// Craftad — Prisma schema (public schema only).
+//
+// auth.* and storage.* are Supabase-managed; Prisma never touches them.
+// User identity + onboarding + stripe_customer_id all live in
+// auth.users.raw_user_meta_data, exposed to the backend as the JWT's
+// `user_metadata` claim. No public.users mirror.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  // url       = pooled (PgBouncer, port 6543) — runtime queries
+  // directUrl = direct (port 5432) — migrations only
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// Brand — owned by an auth.users row (userId == auth.users.id). FK is
+// enforced at the app layer; we don't reference the auth schema from Prisma.
+// JSONB columns mirror the existing wire shape so the FE stays unchanged.
+model Brand {
+  id              String   @id @default(uuid()) @db.Uuid
+  userId          String   @map("user_id") @db.Uuid
+  name            String
+  description     String   @default("")
+  slogan          String   @default("")
+  logoUrl         String?  @map("logo_url")
+  logos           Json     @default("[]")
+  colors          Json     @default("[]")
+  values          Json     @default("[]")
+  tone            String?
+  websiteUrl      String   @default("") @map("website_url")
+  domain          String?
+  socials         Json     @default("[]")
+  industries      Json     @default("[]")
+  primaryLanguage String?  @map("primary_language")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  projects        Project[]
+  avatars         Avatar[]
+
+  @@index([userId])
+  @@map("brands")
+}
+
+// Target-audience persona for a brand. User-initiated: created via
+// /app/avatars by clicking "create new avatar"; backend orchestrates
+// GPT-4o (Hebrew-JSON details) → Gemini Nano Banana Pro (portrait),
+// uploads the portrait to the avatar-portraits Storage bucket. All
+// text fields are editable post-generation (the page lets the user
+// tweak title/age/interests/etc.); ai_blob holds the raw GPT JSON
+// so we can re-roll the portrait without re-spending the text call.
+//
+// Per the handoff doc: target_audience is constrained to "one Hebrew
+// word, ≤25 chars" — that's enforced in the DTO, not the column
+// (Postgres TEXT is permissive enough that the constraint reads
+// better as application-layer validation we can change without a
+// migration).
+//
+// CASCADE on brandId so deleting a brand cleans up its avatars.
+model Avatar {
+  id              String   @id @default(uuid()) @db.Uuid
+  brandId         String   @map("brand_id") @db.Uuid
+  userId          String   @map("user_id") @db.Uuid
+
+  title           String?
+  gender          String?
+  ageMin          Int?     @map("age_min")
+  ageMax          Int?     @map("age_max")
+  targetAudience  String?  @map("target_audience")
+  language        String   @default("he")
+  interests       String[] @default([])
+  pains           String[] @default([])
+  dreamsGoals     String[] @default([]) @map("dreams_goals")
+  moreDetails     String?  @map("more_details")
+
+  portraitUrl     String?  @map("portrait_url")
+  thumbnailUrl    String?  @map("thumbnail_url")
+
+  aiBlob          Json?    @map("ai_blob")
+
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  brand           Brand    @relation(fields: [brandId], references: [id], onDelete: Cascade)
+
+  @@index([brandId])
+  @@index([userId])
+  @@map("avatars")
+}
+
+// Lifecycle of a single image variant. Mirrors the FE constants we already
+// read off creative_generations rows. Stored as Postgres enums for DB-level
+// constraint (no 'pernding' typos surviving a deploy).
+enum GenerationStatus {
+  pending
+  dispatched
+  ready
+  failed
+}
+
+enum EditStatus {
+  pending
+  dispatched
+  ready
+  failed
+}
+
+// One wizard submission. The detail page renders a project's generations
+// together; the list page shows one card per project.
+//
+// `draft` carries the full wizard snapshot (resolved Hebrew labels in
+// `draft.context`, chosen product image in `draft.images[]`). The
+// dispatch endpoint reads from here so the FE doesn't have to send the
+// payload twice.
+//
+// CASCADE on brandId so deleting a brand cleans up its projects;
+// generations cascade similarly from project below.
+model Project {
+  id           String   @id @default(uuid()) @db.Uuid
+  userId       String   @map("user_id") @db.Uuid
+  brandId      String   @map("brand_id") @db.Uuid
+  serviceType  String   @default("campaign-creative") @map("service_type")
+  name         String?
+  draft        Json     @default("{}")
+  aspectRatio  String?  @map("aspect_ratio")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  brand                  Brand                    @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  generations            CreativeGeneration[]
+  copywritingGenerations CopywritingGeneration[]
+  videoGenerations       VideoGeneration[]
+
+  @@index([userId])
+  @@index([brandId])
+  @@map("projects")
+}
+
+// Per-variant generation. Status flows pending → dispatched → ready|failed.
+// Scoring fields are written async by the score-creative service after the
+// row hits 'ready' (Phase 2.2). Edit fields hold an in-flight edit candidate
+// until the user clicks Save (Phase 2.3).
+//
+// recommendations is text[] so Postgres can index/query individual entries
+// later if we ever build a "show all suggestions across variants" view.
+model CreativeGeneration {
+  id                String            @id @default(uuid()) @db.Uuid
+  projectId         String            @map("project_id") @db.Uuid
+  userId            String            @map("user_id") @db.Uuid
+  status            GenerationStatus  @default(pending)
+  prompt            String?
+  imageUrl          String?           @map("image_url")
+  cleanImageUrl     String?           @map("clean_image_url")
+  errorMessage      String?           @map("error_message")
+  // Auto-retries when GCF/Gemini returns 429 RESOURCE_EXHAUSTED.
+  gcfRetryCount     Int               @default(0) @map("gcf_retry_count")
+
+  // Scoring (handoff §8.4). Null until score-creative writes back.
+  creativeScore     Int?              @map("creative_score")
+  performanceScore  Int?              @map("performance_score")
+  recommendations   String[]          @default([])
+  scoredAt          DateTime?         @map("scored_at")
+
+  // In-flight inline edit. Promoted into image fields on Save.
+  // editImageUrl + editCleanImageUrl mirror the imageUrl/cleanImageUrl
+  // pair: editImageUrl is the watermarked preview shown in the edit drawer,
+  // editCleanImageUrl is the unwatermarked PATH (private bucket) used when
+  // commit-edit promotes them. Without this split, an editing user would
+  // get a clean preview they could screenshot / DevTools-extract to bypass
+  // the watermark gate entirely.
+  editStatus        EditStatus?       @map("edit_status")
+  editImageUrl      String?           @map("edit_image_url")
+  editCleanImageUrl String?           @map("edit_clean_image_url")
+  editPrompt        String?           @map("edit_prompt")
+  editErrorMessage  String?           @map("edit_error_message")
+  editGcfRetryCount Int               @default(0) @map("edit_gcf_retry_count")
+
+  // User-curated favorite. Same pattern as copywriting_generations —
+  // a boolean on the row, no separate bookmarks table, so the result
+  // grid carries the state without an extra join.
+  bookmarked        Boolean          @default(false)
+
+  createdAt         DateTime          @default(now()) @map("created_at")
+  updatedAt         DateTime          @updatedAt @map("updated_at")
+
+  project           Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([userId])
+  @@index([status])
+  @@map("creative_generations")
+}
+
+// Per-variant copywriting generation. Sibling to CreativeGeneration —
+// copywriting is text-only so the schema swaps imageUrl/edit-* fields
+// for the LLM-output set the FE renders (ad body, rhetorical
+// framework, tone descriptors, keyword anchors, self-rated conversion
+// score). Status flows pending → ready|failed; there's no
+// `dispatched` interim because text generation is synchronous in the
+// dispatcher (no Cloud Tasks roundtrip — see
+// modules/copywriting-generations/services/copywriting-dispatch).
+//
+// Fields kept slim on purpose. The handoff doc's `ai_tone`,
+// `payload_snapshot`, `retry_count` were skipped for v1:
+//   - tone primary lives inside the tonesUsed array already
+//   - payload snapshot is on the parent project's `draft` JSONB
+//   - retries land when we have a real failure mode demanding them
+// We can backfill these in a follow-up migration without touching app
+// code, since they're purely additive.
+model CopywritingGeneration {
+  id                String           @id @default(uuid()) @db.Uuid
+  projectId         String           @map("project_id") @db.Uuid
+  userId            String           @map("user_id") @db.Uuid
+  status            GenerationStatus @default(pending)
+
+  // LLM output. All nullable until the variant lands in `ready`.
+  // `framework` is a stable English enum value for analytics/storage
+  // (AIDA, PAS, BAB, FAB, 4PS); `frameworkHe` is its localized label
+  // for direct display so the FE doesn't ship its own mapping table.
+  // `conversionScore` is the model's self-rated 0-100 estimate —
+  // clamped at write time, not at read.
+  adText            String?          @map("ad_text")
+  framework         String?
+  frameworkHe       String?          @map("framework_he")
+  tonesUsed         String[]         @default([]) @map("tones_used")
+  keywords          String[]         @default([])
+  conversionScore   Int?             @map("conversion_score")
+
+  // Bookmark — handoff §5.4 wants this app-wide. Keeping it here
+  // (instead of a separate bookmarks table) so the same row carries
+  // its bookmark state with no extra join on the result page.
+  bookmarked        Boolean          @default(false)
+
+  errorMessage      String?          @map("error_message")
+  createdAt         DateTime         @default(now()) @map("created_at")
+  updatedAt         DateTime         @updatedAt @map("updated_at")
+
+  project           Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([userId])
+  @@index([status])
+  @@map("copywriting_generations")
+}
+
+// Per-variant video generation. Sibling to CreativeGeneration and
+// CopywritingGeneration — video-creative is an entirely separate
+// pipeline (Veo 3 via Vertex AI, async poll-based, no webhooks from
+// the provider — see modules/video-generations/services/video-dispatch).
+//
+// Why a dedicated table vs overloading CreativeGeneration:
+//   • no watermark divergence (cleanImageUrl ↔ imageUrl pair doesn't
+//     apply to video)
+//   • no scoring (creative/performance scores are ad-effectiveness-
+//     tuned and don't apply to product video)
+//   • no edit flow (out of v1; re-run the wizard for a new video)
+//   • has fields the image schema lacks: `mode` (text-to-video vs
+//     image-to-video), `durationSeconds` (we ship 8s today, leave
+//     room to vary), `posterUrl` (Veo's thumbnail), `referenceImageUrl`
+//     (image-mode only, pulled from project.draft.images[0].url at
+//     dispatch time and stored here for replay/audit)
+//
+// Status flows: pending → dispatched → ready | failed. Single dispatch
+// per click (not 3-parallel like the other flows) — video gen is ~10-
+// 20× the cost per unit and ~5× the wall-clock time of image gen, so
+// users iterate on one video rather than comparing three.
+model VideoGeneration {
+  id                  String            @id @default(uuid()) @db.Uuid
+  projectId           String            @map("project_id") @db.Uuid
+  userId              String            @map("user_id") @db.Uuid
+  status              GenerationStatus  @default(pending)
+
+  // Generation inputs — captured at dispatch time so the row is
+  // self-describing and can be replayed/audited without joining back
+  // to the project draft (which the user may edit later).
+  mode                String            // 'text' | 'image'
+  prompt              String?
+  referenceImageUrl   String?           @map("reference_image_url")
+  aspectRatio         String            @map("aspect_ratio")
+  durationSeconds     Int               @default(8) @map("duration_seconds")
+
+  // Veo's long-running-operation reference (e.g.
+  // `models/veo-3.0-generate-001/operations/abc123`). Stored on
+  // dispatch so the poll service can query Veo's status endpoint by
+  // operation name. Null for legacy rows that pre-date the direct-
+  // Veo integration. Cleared (or left as-is) once the row settles —
+  // not strictly necessary at that point but harmless.
+  operationName       String?           @map("operation_name")
+
+  // Outputs. PosterUrl is Veo's first-frame thumbnail when Veo
+  // provides it; otherwise null and the HTML5 player shows its
+  // default empty frame. Both null until status flips to `ready`.
+  videoUrl            String?           @map("video_url")
+  posterUrl           String?           @map("poster_url")
+
+  errorMessage        String?           @map("error_message")
+  createdAt           DateTime          @default(now()) @map("created_at")
+  updatedAt           DateTime          @updatedAt @map("updated_at")
+
+  project             Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([userId])
+  @@index([status])
+  @@map("video_generations")
+}

@@ -1,0 +1,110 @@
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { Brand, Prisma } from '@prisma/client';
+import { PrismaService } from '../../../common/prisma/prisma.service';
+import { CreateBrandDto } from '../dto/create-brand.dto';
+import { UpdateBrandDto } from '../dto/update-brand.dto';
+
+// Every query is scoped to userId from the JWT. A brand owned by someone
+// else returns 404 (not 403) so we don't leak which ids exist.
+
+// Shape returned by list(): the Brand row plus a denormalised projectCount
+// that the FE card uses without a second round-trip. findOne() omits it —
+// only the list view needs the aggregate today.
+export type BrandWithProjectCount = Brand & { projectCount: number };
+
+@Injectable()
+export class BrandsService {
+  constructor(private readonly prisma: PrismaService) {}
+
+  async list(userId: string): Promise<BrandWithProjectCount[]> {
+    const rows = await this.prisma.brand.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      include: { _count: { select: { projects: true } } },
+    });
+    // Flatten Prisma's nested `_count.projects` into a top-level projectCount
+    // so the wire shape stays flat and the FE doesn't have to know about
+    // Prisma's aggregate convention.
+    return rows.map(({ _count, ...brand }) => ({
+      ...brand,
+      projectCount: _count.projects,
+    }));
+  }
+
+  async findOne(id: string, userId: string): Promise<Brand> {
+    const brand = await this.prisma.brand.findFirst({
+      where: { id, userId },
+    });
+    if (!brand) throw new NotFoundException('Brand not found');
+    return brand;
+  }
+
+  create(userId: string, dto: CreateBrandDto): Promise<Brand> {
+    return this.prisma.brand.create({
+      data: this.toCreateData(userId, dto),
+    });
+  }
+
+  async update(
+    id: string,
+    userId: string,
+    dto: UpdateBrandDto,
+  ): Promise<Brand> {
+    // updateMany lets us scope the WHERE by userId in one round-trip.
+    // count === 0 means "not found or not yours" — same 404 either way.
+    const result = await this.prisma.brand.updateMany({
+      where: { id, userId },
+      data: this.toUpdateData(dto),
+    });
+    if (result.count === 0) throw new NotFoundException('Brand not found');
+    return this.findOne(id, userId);
+  }
+
+  async remove(id: string, userId: string): Promise<{ id: string }> {
+    const result = await this.prisma.brand.deleteMany({
+      where: { id, userId },
+    });
+    if (result.count === 0) throw new NotFoundException('Brand not found');
+    return { id };
+  }
+
+  private toCreateData(
+    userId: string,
+    dto: CreateBrandDto,
+  ): Prisma.BrandUncheckedCreateInput {
+    return {
+      userId,
+      name: dto.name.trim(),
+      description: dto.description ?? '',
+      slogan: dto.slogan ?? '',
+      logoUrl: dto.logoUrl ?? null,
+      logos: (dto.logos ?? []) as Prisma.InputJsonValue,
+      colors: (dto.colors ?? []) as Prisma.InputJsonValue,
+      values: (dto.values ?? []) as Prisma.InputJsonValue,
+      tone: dto.tone ?? null,
+      websiteUrl: dto.websiteUrl ?? '',
+      domain: dto.domain ?? null,
+      socials: (dto.socials ?? []) as Prisma.InputJsonValue,
+      industries: (dto.industries ?? []) as Prisma.InputJsonValue,
+      primaryLanguage: dto.primaryLanguage ?? null,
+    };
+  }
+
+  private toUpdateData(dto: UpdateBrandDto): Prisma.BrandUncheckedUpdateInput {
+    const data: Prisma.BrandUncheckedUpdateInput = {};
+    if (dto.name !== undefined) data.name = dto.name.trim();
+    if (dto.description !== undefined) data.description = dto.description ?? '';
+    if (dto.slogan !== undefined) data.slogan = dto.slogan ?? '';
+    if (dto.logoUrl !== undefined) data.logoUrl = dto.logoUrl ?? null;
+    if (dto.logos !== undefined) data.logos = dto.logos as Prisma.InputJsonValue;
+    if (dto.colors !== undefined) data.colors = dto.colors as Prisma.InputJsonValue;
+    if (dto.values !== undefined) data.values = dto.values as Prisma.InputJsonValue;
+    if (dto.tone !== undefined) data.tone = dto.tone ?? null;
+    if (dto.websiteUrl !== undefined) data.websiteUrl = dto.websiteUrl ?? '';
+    if (dto.domain !== undefined) data.domain = dto.domain ?? null;
+    if (dto.socials !== undefined) data.socials = dto.socials as Prisma.InputJsonValue;
+    if (dto.industries !== undefined) data.industries = dto.industries as Prisma.InputJsonValue;
+    if (dto.primaryLanguage !== undefined) data.primaryLanguage = dto.primaryLanguage ?? null;
+    return data;
+  }
+}

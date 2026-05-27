@@ -1,0 +1,53 @@
+{
+  "name": "@craftad/api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Craftad backend API — NestJS + Prisma. Replaces per-feature Supabase Edge Functions.",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "nest build",
+    "start": "node dist/main.js",
+    "start:dev": "nest start --watch",
+    "start:debug": "nest start --debug --watch",
+    "start:prod": "node dist/main.js",
+    "lint": "eslint \"src/**/*.ts\" --fix",
+    "format": "prettier --write \"src/**/*.ts\"",
+    "typecheck": "tsc --noEmit",
+    "db:generate": "prisma generate",
+    "db:migrate:dev": "prisma migrate dev",
+    "db:migrate:deploy": "prisma migrate deploy",
+    "db:studio": "prisma studio",
+    "db:migrate:reset": "prisma migrate reset"
+  },
+  "dependencies": {
+    "@imgly/background-removal-node": "^1.4.5",
+    "@nestjs/common": "^11.0.0",
+    "@nestjs/core": "^11.0.0",
+    "@nestjs/platform-express": "^11.0.0",
+    "@nestjs/swagger": "^11.0.0",
+    "@prisma/client": "^6.0.0",
+    "@supabase/supabase-js": "^2.105.4",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.14.1",
+    "dotenv": "^16.6.1",
+    "jose": "^5.10.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1",
+    "sharp": "^0.32.6",
+    "stripe": "^17.7.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "^11.0.0",
+    "@nestjs/schematics": "^11.0.0",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.0",
+    "prisma": "^6.0.0",
+    "ts-loader": "^9.5.0",
+    "ts-node": "^10.9.2",
+    "tsconfig-paths": "^4.2.0",
+    "typescript": "^5.7.0"
+  }
+}
