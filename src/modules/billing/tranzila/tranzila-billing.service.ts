@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { ForbiddenException, Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { BillingPaymentAttemptKind } from '@prisma/client';
 import { AppConfigService } from '../../../config/config.service';
@@ -68,9 +68,33 @@ interface NonceEntry {
   expiresAt: number;
 }
 
-/* J5 verify amount. ₪1 is the industry-safe default for the classic
- * iframe (docs §7 Q3). Auto-reversed by the acquirer; user sees no real
- * charge. If the merchant tells us to switch to ₪0 we change this. */
+/* Iframe verification amount.
+ *
+ * ₪1 J5 verify — the industry-safe and Tranzila-canonical value for
+ * tokenization without an actual charge. The acquirer authorizes ₪1
+ * (placing a temporary hold), no settlement is sent, and the hold
+ * auto-reverses within ~3 business days. No money moves.
+ *
+ * The "₪1.00 to pay" line is hidden from the user by `hidesum=1` in
+ * the iframe fields (docs §130: "hide payment sum — it is possible to
+ * pass this parameter only if the transaction is made through the
+ * token system and only if one of the following variables is sent:
+ * tranmode=VK or tranmode=K or tranmode=NK"). Our tranmode=VK matches.
+ *
+ * Why not sum=0:
+ *   - tranmode=AK + sum=0: rejected at submit ("System Error") — A is
+ *     a real charge and SHVA cannot settle ₪0.
+ *   - tranmode=VK + sum=0: also rejected at submit — every community
+ *     port and working integration uses sum > 0 for tokenization. The
+ *     iframe RENDERS with sum=0 (which is what the merchant's proof
+ *     URL demonstrates) but the actual submission to the acquirer
+ *     fails its zero-amount validation.
+ *   - tranmode=K + sum=0: would tokenize without J5 auth, but
+ *     community ports report higher day-7 decline rates from Israeli
+ *     acquirers for K-only tokens. Not worth the risk.
+ *
+ * Conclusion: sum=1 + hidesum=1 + tranmode=VK is the documented
+ * canonical path. */
 const VERIFY_SUM_ILS = 1;
 
 const NONCE_TTL_MS = 15 * 60 * 1000;
@@ -78,8 +102,9 @@ const NONCE_TTL_MS = 15 * 60 * 1000;
 /* All correlation params get a `craftad_` prefix so Tranzila's notify
  * callback echoes them under a name we recognise as ours. Tranzila
  * passes through any unknown field verbatim — that's the documented
- * pattern across community ports. */
-const CORRELATION_PREFIX = 'craftad_';
+ * pattern across community ports. Exported so the BE return-proxy
+ * controller can read the same fields back from the form-POST. */
+export const CORRELATION_PREFIX = 'craftad_';
 
 @Injectable()
 export class TranzilaBillingService {
@@ -99,15 +124,20 @@ export class TranzilaBillingService {
 
   async initIframeSession(input: InitIframeSessionInput): Promise<IframeSessionResponse> {
     const supplier = this.config.require('TRANZILA_TERMINAL_CHARGE');
-    const pw = this.config.require('TRANZILA_PW_CHARGE');
-    const appUrl = this.config.require('APP_PUBLIC_URL');
     const backendUrl = this.config.require('BACKEND_PUBLIC_URL');
+    /* APP_PUBLIC_URL is no longer used in the iframe fields — the
+     * front-channel redirects now point at our BE proxy. The proxy
+     * (tranzila-billing.controller.ts → returnFromIframe) reads
+     * APP_PUBLIC_URL on its own to choose the FE destination. */
 
-    const thtk = await this.tranzila.createHandshake({
-      supplier,
-      sum: VERIFY_SUM_ILS,
-      pw,
-    });
+    /* No handshake call here. The handshake API (api.tranzila.com/v1/
+     * handshake/create) requires Tranzila's paid token module on the
+     * terminal — see the docs section "From the moment the HandShake
+     * function is activated, you will not be able to process payments
+     * without receiving the HandShake token". Our merchant terminal
+     * doesn't have it; iframenew.php accepts requests directly when
+     * the module is off. If/when the module is purchased, flip a flag
+     * and resurrect the call (the client method is still available). */
 
     const nonce = randomUUID();
     const expiresAt = Date.now() + NONCE_TTL_MS;
@@ -119,37 +149,60 @@ export class TranzilaBillingService {
       expiresAt,
     });
 
-    /* Front-channel redirect targets. The Tranzila iframe navigates to
-     * these on success/failure. Plan-change return targets live on the
-     * payment page; trial returns straight to /app via TrialStartPage's
-     * onTrialSuccess once the FE refetches metadata. */
-    const successPath =
-      input.kind === 'trial'
-        ? '/trial/success'
-        : '/app/settings/payment?tranzila=card_updated';
-    const failPath =
-      input.kind === 'trial'
-        ? '/trial/failed'
-        : '/app/settings/payment?tranzila=card_failed';
+    /* Front-channel redirect targets.
+     *
+     * Tranzila form-POSTs to success_url_address / fail_url_address
+     * after the iframe transition (Tranzila docs §110). Static SPA
+     * hosting (Vite dev + Vercel prod) only accepts GET on SPA routes,
+     * so we can't point these at the FE directly — that produces 405
+     * Method Not Allowed. Instead we point at BE proxy endpoints that
+     * accept POST, read the craftad_kind correlation field, and
+     * respond 303 See Other → the FE SPA route. The browser then
+     * navigates to the FE via GET, the SPA loads, /trial/success
+     * postMessages the parent modal.
+     *
+     * The BE proxy itself is in tranzila-billing.controller.ts. */
+    const returnSuccessUrl = `${backendUrl}/billing/tranzila/return/success`;
+    const returnFailedUrl = `${backendUrl}/billing/tranzila/return/failed`;
 
     const fields: Record<string, string> = {
-      /* Charge params — see docs/billing-tranzila.md §4.2 */
+      /* Core iframe params — names match Tranzila docs exactly.
+       *
+       * tranmode=VK = "J5 verify + tokenize". Issuer authorizes the
+       * sum (₪1) as a temporary hold, no settlement is sent, the hold
+       * auto-reverses, and Tranzila returns a TranzilaTK we charge on
+       * day 7 via tranzila31tk.cgi. */
       sum: VERIFY_SUM_ILS.toFixed(2),
       currency: '1',
       cred_type: '1',
       tranmode: 'VK',
-      thtk,
-      new_process: '1',
+      /* Hides the "₪1.00 to pay" line from the user. Docs §130 allows
+       * hidesum only when tranmode ∈ {VK, K, NK} — VK matches. The user
+       * sees the card-entry form without a misleading "amount to pay"
+       * banner, even though Tranzila's engine still validates against
+       * the non-zero sum behind the scenes. */
+      hidesum: '1',
+      /* `newprocess=1` (3DS V2 forcing, docs §136) is intentionally
+       * OMITTED here. The terminal's default 3DS setting applies.
+       * Forcing 3DS V2 specifically for a verify-only tokenize flow
+       * caused "System Error" at the card-entry transition during
+       * Phase 8 testing — the 3DS challenge needs a substantive
+       * settlement amount to authenticate against, and the J5 hold
+       * isn't that. If a real-charge flow ever needs 3DS V2, add
+       * `newprocess=1` to that flow's fields, not here. */
       /* Hebrew iframe UI (per Tranzila docs: lang=il for Israel). */
       lang: 'il',
-      /* Wallet buttons. Merchant confirmed these flags work (§7 Q2);
-       * acquirer-side enablement on the charge terminal is the
-       * merchant's responsibility. */
+      /* Wallet buttons. `google_pay` (with underscore) per docs §134;
+       * `apple_pay` per merchant confirmation (Apple Pay also needs the
+       * domain-association file at .well-known and Tranzila to register
+       * the terminal for Apple Pay — that's the merchant's responsibility).
+       * The FE iframe element must also carry allowpaymentrequest='true'
+       * for the Payment Request API to fire — see TranzilaIframe.jsx. */
+      google_pay: '1',
       apple_pay: '1',
-      googlepay: '1',
       /* URLs */
-      success_url_address: `${appUrl}${successPath}`,
-      fail_url_address: `${appUrl}${failPath}`,
+      success_url_address: returnSuccessUrl,
+      fail_url_address: returnFailedUrl,
       notify_url_address: `${backendUrl}/billing/tranzila/notify`,
       /* Pass-through correlation — Tranzila echoes these back in the
        * notify body verbatim. The nonce + user_id pair authenticates
@@ -163,8 +216,7 @@ export class TranzilaBillingService {
 
     this.logger.log(
       `iframe session minted: user=${input.userId} kind=${input.kind} ` +
-        `plan=${input.planId}/${input.cycle} thtk=${thtk.slice(0, 6)}... ` +
-        `nonce=${nonce.slice(0, 8)}...`,
+        `plan=${input.planId}/${input.cycle} nonce=${nonce.slice(0, 8)}...`,
     );
 
     return {
@@ -325,6 +377,66 @@ export class TranzilaBillingService {
       typeof periodEnd === 'number' && Number.isFinite(periodEnd) ? periodEnd : null;
     return { ok: true, periodEndUnix };
   }
+
+  /* --- DEV BYPASS — REMOVE BEFORE PROD -------------------------------
+   *
+   * Short-circuit the Tranzila iframe for internal testing while real
+   * test cards are being coordinated. Gated by TRANZILA_BYPASS_ENABLED.
+   * Writes user_metadata as if a real trial tokenize had completed and
+   * inserts a clearly-marked billing_payment_attempts row. Never call
+   * from prod — the endpoint that exposes this throws when the env
+   * flag is false. */
+  async bypassTrial(input: {
+    userId: string;
+  }): Promise<{ ok: true; subscriptionId: string }> {
+    if (!this.config.get('TRANZILA_BYPASS_ENABLED')) {
+      throw new ForbiddenException(
+        'Tranzila bypass is not enabled. Set TRANZILA_BYPASS_ENABLED=true ' +
+          'in backend/.env to enable. Production must NEVER set this.',
+      );
+    }
+
+    const bypassToken = `BYPASS-${randomUUID()}`;
+    const planId = 'starter';
+    const cycle = 'yearly';
+
+    await this.syncService.writeFromBypass({
+      userId: input.userId,
+      planId,
+      cycle,
+      bypassToken,
+    });
+
+    /* Audit row so the bypass leaves a paper trail (and so the
+     * idempotencyKey unique index sanely accepts repeated bypass calls
+     * from the same user — each call generates a new bypass token). */
+    try {
+      await this.prisma.billingPaymentAttempt.create({
+        data: {
+          userId: input.userId,
+          kind: BillingPaymentAttemptKind.verify,
+          amount: 0,
+          currency: 'ILS',
+          tranzilaIndex: bypassToken,
+          responseCode: 'BYPASS',
+          rawResponse: 'DEV BYPASS — no Tranzila call made',
+          success: true,
+          idempotencyKey: `${input.userId}:verify:${bypassToken}`,
+        },
+      });
+    } catch (err) {
+      /* P2002 (duplicate idempotency key) is impossible here since we
+       * generate a fresh uuid each call, but log defensively. */
+      this.logger.warn(`bypass audit row insert failed: ${(err as Error).message}`);
+    }
+
+    this.logger.warn(
+      `BYPASS used: user=${input.userId} — trial state written without Tranzila call`,
+    );
+
+    return { ok: true, subscriptionId: bypassToken };
+  }
+  /* --- end DEV BYPASS block ---------------------------------------- */
 
   /* Undo a pending cancellation. Clears cancel_at_period_end so the
    * renewal runner will charge the next period as normal. Idempotent. */

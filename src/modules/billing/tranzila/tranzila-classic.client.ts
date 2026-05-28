@@ -27,10 +27,16 @@ import { BadGatewayException, Injectable, Logger } from '@nestjs/common';
 
 /* Endpoints. Constants rather than env because they're stable Tranzila
  * infrastructure URLs that change roughly never; making them configurable
- * just invites a deployment-time bug. */
+ * just invites a deployment-time bug.
+ *
+ * IFRAME_HOST is `direct.tranzila.com` (canonical per the docs page
+ * captured in docs/Iframe Integration.html — `direct.tranzila.com/
+ * <terminal>/iframenew.php`). The older `directng.tranzila.com` cluster
+ * accepts a different param shape and was the cause of our initial
+ * "Invalid request" failures. */
 const HANDSHAKE_URL = 'https://api.tranzila.com/v1/handshake/create';
 const TOKEN_CHARGE_URL = 'https://secure5.tranzila.com/cgi-bin/tranzila31tk.cgi';
-const IFRAME_HOST = 'https://directng.tranzila.com';
+const IFRAME_HOST = 'https://direct.tranzila.com';
 
 /* 15s matches GcfImagePrepService + dispatch services in this codebase.
  * Tranzila's handshake responds in <500ms; token charge in 2-5s including
@@ -177,12 +183,40 @@ export class TranzilaClassicClient {
     return parsed;
   }
 
-  /* Compose the iframe URL the FE embeds. The actual params (thtk, sum,
-   * tranmode, etc.) go in either the query string or as form fields when
-   * the iframe is POST-rendered; this helper just returns the base URL
-   * for the supplier, since the caller assembles params from context. */
+  /* Compose the iframe URL the FE embeds. Params (sum, tranmode, etc.)
+   * go in either the query string or as form fields when the iframe is
+   * POST-rendered; this helper just returns the base URL for the
+   * supplier, since the caller assembles params from context. */
   buildIframeUrl(supplier: string): string {
     return `${IFRAME_HOST}/${encodeURIComponent(supplier)}/iframenew.php`;
+  }
+
+  /* Best-effort upstream error extraction. Tranzila JSON responses look
+   * like `{"error_code":400,"message":"Invalid request, TranzilaPW"}`;
+   * legacy CGI responses are urlencoded `error_msg=...`. Returns null
+   * when neither shape matches so the caller can fall back to "HTTP N". */
+  private extractUpstreamMessage(body: string): string | null {
+    const trimmed = body.trim();
+    if (!trimmed) return null;
+    if (trimmed.startsWith('{')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (typeof parsed?.message === 'string') return parsed.message;
+        if (typeof parsed?.error === 'string') return parsed.error;
+      } catch {
+        /* fall through to other shapes */
+      }
+    }
+    /* Crude urlencoded scan: look for `error_msg=...` or `message=...`. */
+    const match = /(?:^|&)(?:error_msg|message|error)=([^&]+)/i.exec(trimmed);
+    if (match?.[1]) {
+      try {
+        return decodeURIComponent(match[1].replace(/\+/g, ' '));
+      } catch {
+        return match[1];
+      }
+    }
+    return null;
   }
 
   /* Shared HTTP path. Timeout + AbortController mirror the existing
@@ -214,13 +248,20 @@ export class TranzilaClassicClient {
       const text = await response.text();
 
       if (!response.ok) {
+        /* Surface the upstream Tranzila message in the exception so the
+         * 502 the FE sees carries something actionable. Tranzila's modern
+         * endpoints return JSON like `{"error_code":400,"message":"..."}`;
+         * the legacy CGI returns urlencoded text. We try JSON first and
+         * fall back to the raw body (truncated) — either way the user
+         * sees the actual reason instead of a generic "HTTP 400". */
+        const upstream = this.extractUpstreamMessage(text);
+        const detail = upstream
+          ? `Tranzila ${options.action} ${response.status}: ${upstream}`
+          : `Tranzila ${options.action} returned HTTP ${response.status}`;
         this.logger.warn(
-          `tranzila ${options.action} HTTP ${response.status} supplier=${options.supplier} ` +
-            `body=${truncate(text, 200)}`,
+          `${detail} supplier=${options.supplier} body=${truncate(text, 200)}`,
         );
-        throw new BadGatewayException(
-          `Tranzila ${options.action} returned HTTP ${response.status}`,
-        );
+        throw new BadGatewayException(detail);
       }
 
       return text;

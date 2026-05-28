@@ -313,6 +313,10 @@ export class TranzilaRenewalRunner {
         raw_user_meta_data->>'billing_provider' = 'tranzila'
         AND raw_user_meta_data->>'subscription_status' IN ('trialing', 'active', 'past_due')
         AND COALESCE((raw_user_meta_data->>'subscription_current_period_end')::bigint, 0) <= ${now}
+        /* DEV BYPASS — REMOVE BEFORE PROD: skip bypass users whose
+         * tokens are synthetic and can't be charged via tranzila31tk.
+         * Once the bypass flag is removed this clause becomes a no-op. */
+        AND COALESCE(raw_user_meta_data->>'tranzila_bypass', 'false') != 'true'
       ORDER BY (raw_user_meta_data->>'subscription_current_period_end')::bigint NULLS FIRST
       LIMIT ${MAX_USERS_PER_SWEEP}
     `;

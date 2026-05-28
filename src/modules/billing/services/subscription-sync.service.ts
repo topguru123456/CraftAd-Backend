@@ -239,6 +239,48 @@ export class SubscriptionSyncService {
     this.logger.log(`tranzila resume: user=${input.userId}`);
   }
 
+  /* --- DEV BYPASS — REMOVE BEFORE PROD -------------------------------
+   *
+   * Marks the user as if a real Tranzila trial tokenize had completed.
+   * Used by the bypass endpoint while we wait for real merchant-
+   * provided test cards. The metadata layout matches what
+   * writeFromTranzilaTokenized produces, plus a `tranzila_bypass: true`
+   * marker the renewal runner uses to skip these users.
+   *
+   * The token is a synthetic value starting with `BYPASS-` so it's
+   * instantly recognizable in DB inspection and clearly never going
+   * to charge anything via `tranzila31tk.cgi`. */
+  async writeFromBypass(input: {
+    userId: string;
+    planId: string;
+    cycle: string;
+    bypassToken: string;
+  }): Promise<void> {
+    const TRIAL_DAYS = 7;
+    const periodEnd = Math.floor(Date.now() / 1000) + TRIAL_DAYS * 86400;
+    await this.patchUserMetadata(input.userId, {
+      billing_provider: 'tranzila',
+      tranzila_bypass: true,
+      tranzila_token: input.bypassToken,
+      tranzila_token_expmonth: '12',
+      tranzila_token_expyear: '99',
+      tranzila_card_last4: '0000',
+      tranzila_last_index: input.bypassToken,
+      tranzila_last_confirmation_code: 'BYPASS',
+      subscription_id: `tz_bypass_${randomUUID()}`,
+      subscription_plan_id: input.planId,
+      subscription_cycle: input.cycle,
+      subscription_status: 'trialing',
+      subscription_current_period_end: periodEnd,
+      cancel_at_period_end: false,
+    });
+    this.logger.warn(
+      `BYPASS trial tokenize written: user=${input.userId} plan=${input.planId}/${input.cycle} ` +
+        `— this user is in DEV BYPASS mode and renewals will be SKIPPED`,
+    );
+  }
+  /* --- end DEV BYPASS block ---------------------------------------- */
+
   /* In-app plan change. No proration in v1 — the next renewal uses the
    * new amount on the existing period_end schedule. */
   async updateTranzilaPlan(input: {

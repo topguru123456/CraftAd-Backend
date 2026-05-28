@@ -1,11 +1,14 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
   Headers,
   HttpCode,
   HttpStatus,
+  Param,
   Post,
+  Res,
   UnauthorizedException,
 } from '@nestjs/common';
 import {
@@ -16,12 +19,14 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { IsIn } from 'class-validator';
+import type { Response } from 'express';
 import { AppConfigService } from '../../../config/config.service';
 import { CurrentUser } from '../../auth/decorators/current-user.decorator';
 import { Public } from '../../auth/decorators/public.decorator';
 import { AuthenticatedUser } from '../../auth/types/authenticated-user.type';
 import type { InvoiceListItemDto } from '../dto/invoice-list-item.dto';
 import {
+  CORRELATION_PREFIX,
   IframeSessionResponse,
   TranzilaBillingService,
 } from '../tranzila/tranzila-billing.service';
@@ -123,6 +128,64 @@ export class TranzilaBillingController {
     return this.tranzila.handleNotify(body ?? {});
   }
 
+  /* Iframe-return proxy.
+   *
+   * Tranzila form-POSTs to success_url_address / fail_url_address
+   * after the iframe transition (Tranzila docs §110). Static SPA hosts
+   * (Vite dev, Vercel prod) only accept GET on SPA routes, so POSTing
+   * the FE route directly returns 405 Method Not Allowed. This proxy
+   * accepts the POST, reads the craftad_kind correlation field to know
+   * which flow we're in (trial vs update_card), and responds 303 →
+   * the appropriate FE URL. The browser follows the redirect via GET,
+   * the SPA loads cleanly, /trial/success or /app/settings/payment
+   * postMessages or refreshes per the existing flow.
+   *
+   * The body itself is discarded — every field Tranzila sends here is
+   * also sent to /billing/tranzila/notify (back-channel), where it's
+   * actually consumed. This proxy is just about making the redirect
+   * work with static SPA hosting.
+   *
+   * 303 See Other is the correct redirect status for "I received your
+   * POST, now make a GET to this new URL". 302 Found is what most
+   * browsers do anyway but 303 is explicit per RFC 7231.
+   *
+   * Open-redirect-safe: `outcome` is constrained to two literals;
+   * destinations are constructed from APP_PUBLIC_URL (our env), not
+   * from user-controlled body fields. */
+  @Post('return/:outcome')
+  @Public()
+  @ApiExcludeEndpoint()
+  async returnFromIframe(
+    @Param('outcome') outcome: string,
+    @Body() body: Record<string, string>,
+    @Res() res: Response,
+  ): Promise<void> {
+    if (outcome !== 'success' && outcome !== 'failed') {
+      throw new BadRequestException(`Unknown outcome: ${outcome}`);
+    }
+    const appUrl = this.config.require('APP_PUBLIC_URL');
+    const kind = body?.[`${CORRELATION_PREFIX}kind`];
+
+    let destination: string;
+    if (kind === 'update_card') {
+      destination =
+        outcome === 'success'
+          ? `${appUrl}/app/settings/payment?tranzila=card_updated`
+          : `${appUrl}/app/settings/payment?tranzila=card_failed`;
+    } else {
+      /* Default to trial-flow destinations when craftad_kind is
+       * missing or unknown. Trial is the dominant flow + the FE
+       * /trial/success page also handles the "already trialing"
+       * idempotent case gracefully. */
+      destination =
+        outcome === 'success'
+          ? `${appUrl}/trial/success`
+          : `${appUrl}/trial/failed`;
+    }
+
+    res.redirect(303, destination);
+  }
+
   @Post('cancel')
   @ApiBearerAuth('supabase-jwt')
   @HttpCode(HttpStatus.OK)
@@ -145,6 +208,26 @@ export class TranzilaBillingController {
       userMetadata: user.metadata ?? {},
     });
   }
+
+  /* --- DEV BYPASS — REMOVE BEFORE PROD --------------------------------
+   * Short-circuits the Tranzila iframe so internal QA can land in the
+   * app without real card capture while real test cards are being
+   * coordinated. Gated by TRANZILA_BYPASS_ENABLED env (defaults false).
+   * The service throws ForbiddenException when the flag is off, so even
+   * if the endpoint is reached in prod with the JWT it does nothing.
+   * Remove this endpoint (and the corresponding service method +
+   * writeFromBypass + runner skip clause + env var) when real test
+   * cards are available. */
+  @Post('bypass-trial')
+  @ApiBearerAuth('supabase-jwt')
+  @HttpCode(HttpStatus.OK)
+  @ApiExcludeEndpoint()
+  async bypassTrial(
+    @CurrentUser() user: AuthenticatedUser,
+  ): Promise<{ ok: true; subscriptionId: string }> {
+    return this.tranzila.bypassTrial({ userId: user.id });
+  }
+  /* --- end DEV BYPASS block ------------------------------------------ */
 
   @Post('resume')
   @ApiBearerAuth('supabase-jwt')

@@ -118,6 +118,27 @@ export const envSchema = z.object({
   TRANZILA_PW_CHARGE:       emptyAsUndefined(z.string().min(1).optional()),
   TRANZILA_PW_TOKEN:        emptyAsUndefined(z.string().min(1).optional()),
   TRANZILA_ADMIN_SECRET:    emptyAsUndefined(z.string().min(16).optional()),
+
+  // ── DEV BYPASS — REMOVE BEFORE PROD ──────────────────────────────
+  //
+  // TRANZILA_BYPASS_ENABLED  Temporary flag that turns on
+  //                          POST /billing/tranzila/bypass-trial. When
+  //                          true, an authenticated user can short-
+  //                          circuit the Tranzila iframe and land in the
+  //                          app as a "trialing" user without going
+  //                          through real card capture. Useful while
+  //                          we coordinate real test cards with the
+  //                          merchant team. Default false; production
+  //                          deploys MUST NOT set this.
+  //
+  // Pair with frontend env VITE_TRANZILA_BYPASS_ENABLED to expose the
+  // bypass button in the trial page UI. The BE flag is the actual
+  // gate — without it the endpoint returns 403 even if the FE shows
+  // the button.
+  TRANZILA_BYPASS_ENABLED: z.preprocess(
+    (v) => (v === 'true' || v === '1' ? true : v === 'false' || v === '0' || v === undefined || v === '' ? false : v),
+    z.boolean().default(false),
+  ),
 });
 
 export type Env = z.infer<typeof envSchema>;
