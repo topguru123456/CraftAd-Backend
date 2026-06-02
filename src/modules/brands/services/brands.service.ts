@@ -7,27 +7,25 @@ import { UpdateBrandDto } from '../dto/update-brand.dto';
 // Every query is scoped to userId from the JWT. A brand owned by someone
 // else returns 404 (not 403) so we don't leak which ids exist.
 
-// Shape returned by list(): the Brand row plus a denormalised projectCount
-// that the FE card uses without a second round-trip. findOne() omits it —
-// only the list view needs the aggregate today.
-export type BrandWithProjectCount = Brand & { projectCount: number };
+export type BrandWithCounts = Brand & {
+  projectCount: number;
+  avatarCount: number;
+};
 
 @Injectable()
 export class BrandsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async list(userId: string): Promise<BrandWithProjectCount[]> {
+  async list(userId: string): Promise<BrandWithCounts[]> {
     const rows = await this.prisma.brand.findMany({
       where: { userId },
       orderBy: { createdAt: 'desc' },
-      include: { _count: { select: { projects: true } } },
+      include: { _count: { select: { projects: true, avatars: true } } },
     });
-    // Flatten Prisma's nested `_count.projects` into a top-level projectCount
-    // so the wire shape stays flat and the FE doesn't have to know about
-    // Prisma's aggregate convention.
     return rows.map(({ _count, ...brand }) => ({
       ...brand,
       projectCount: _count.projects,
+      avatarCount: _count.avatars,
     }));
   }
 

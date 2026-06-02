@@ -26,7 +26,7 @@ import { CreateBrandDto } from '../dto/create-brand.dto';
 import { FetchBrandDto } from '../dto/fetch-brand.dto';
 import { UpdateBrandDto } from '../dto/update-brand.dto';
 import { BrandFetchService, NormalizedBrand } from '../services/brand-fetch.service';
-import { BrandsService, BrandWithProjectCount } from '../services/brands.service';
+import { BrandsService, BrandWithCounts } from '../services/brands.service';
 
 @ApiTags('brands')
 @ApiBearerAuth('supabase-jwt')
@@ -52,7 +52,7 @@ export class BrandsController {
     description:
       "Brands owned by the authenticated user, each with a `projectCount`.",
   })
-  list(@CurrentUser() user: AuthenticatedUser): Promise<BrandWithProjectCount[]> {
+  list(@CurrentUser() user: AuthenticatedUser): Promise<BrandWithCounts[]> {
     return this.brands.list(user.id);
   }
 

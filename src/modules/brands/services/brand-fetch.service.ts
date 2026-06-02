@@ -131,13 +131,30 @@ export class BrandFetchService {
       ? brand.industries.eic
       : [];
 
-    // Each color gets a stable client-side id so the wizard's swatch
-    // input doesn't re-mount on every keystroke.
-    const colors = rawColors.map((c) => ({
-      id: randomUUID(),
-      hex: typeof c.hex === 'string' ? c.hex : '',
-      name: c.name ?? '',
-    }));
+    // Brand-level palette + per-logo palettes, deduped by hex. context.dev
+    // sometimes splits the full color set across `brand.colors` and each
+    // logo's `colors` array; merging here ensures the wizard surfaces
+    // everything the API actually returned.
+    const seen = new Set<string>();
+    const colors: Array<{ id: string; hex: string; name: string }> = [];
+    const pushColor = (raw: unknown) => {
+      if (!raw || typeof raw !== 'object') return;
+      const hex = (raw as ContextDevColor).hex;
+      if (typeof hex !== 'string' || !hex.trim()) return;
+      const key = hex.trim().toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      colors.push({
+        id: randomUUID(),
+        hex: hex.trim(),
+        name: (raw as ContextDevColor).name ?? '',
+      });
+    };
+    for (const c of rawColors) pushColor(c);
+    for (const logo of logos) {
+      if (!Array.isArray(logo.colors)) continue;
+      for (const c of logo.colors) pushColor(c);
+    }
 
     return {
       name: brand.title ?? '',
