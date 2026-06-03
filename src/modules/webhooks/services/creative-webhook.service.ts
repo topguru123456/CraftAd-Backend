@@ -11,6 +11,7 @@ import {
   isRetryableRateLimitError,
   mapGenerationErrorForUser,
 } from '../../../common/generation-errors/generation-error.util';
+import { validateImageRatio } from '../../../common/aspect-ratio/aspect-ratio.util';
 import { CreativeWebhookDto } from '../dto/creative-webhook.dto';
 
 const CREATIVES_BUCKET = 'creatives';
@@ -59,7 +60,11 @@ export class CreativeWebhookService {
         id: true,
         userId: true,
         status: true,
-        project: { select: { serviceType: true } },
+        /* `aspectRatio` is the wizard-stored id (story / square /
+         * portrait / landscape). validateImageRatio maps it to the
+         * Imagen-API value internally and compares against the
+         * returned PNG's header dimensions. */
+        project: { select: { serviceType: true, aspectRatio: true } },
       },
     });
 
@@ -92,6 +97,25 @@ export class CreativeWebhookService {
       this.logger.warn(`Base64 decode failed for ${row.id}: ${err}`);
       await this.markFailed(row.id, 'Invalid base64 in payload');
       return { ok: true, reason: 'bad_base64' };
+    }
+
+    /* Aspect-ratio sanity check.
+     *
+     * Imagen's `parameters.aspectRatio` is documented as guidance, not
+     * strict — when the reference inputs are square the model
+     * sometimes letterboxes a square composition into a 9:16 canvas.
+     * The dispatcher payload + prompt block already minimize this;
+     * this check is the last line of defense, rejecting before we
+     * spend storage bandwidth uploading a misshapen result.
+     *
+     * `validateImageRatio` returns null when it can't judge (unknown
+     * stored ratio, non-PNG bytes, etc.), in which case we proceed as
+     * before — the validator NEVER rejects on its own uncertainty. */
+    const ratioCheck = validateImageRatio(bytes, row.project?.aspectRatio);
+    if (ratioCheck && !ratioCheck.ok) {
+      this.logger.warn(`Ratio check failed for ${row.id}: ${ratioCheck.reason}`);
+      await this.markFailed(row.id, ratioCheck.reason);
+      return { ok: true, reason: 'ratio_mismatch' };
     }
 
     // Two uploads, two buckets. Order matters: clean goes to the PRIVATE

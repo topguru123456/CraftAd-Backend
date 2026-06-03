@@ -25,12 +25,23 @@ export class PromptAssemblerService {
     brand: PromptBrandInput;
     project: PromptProjectInput;
     referenceMode: CampaignReferenceMode;
+    aspectRatio: string;
   }): string {
     const blocks =
       input.referenceMode === 'user'
         ? staticBlocksWithReference()
         : staticBlocksWithoutReference();
-    return [this.buildContextBlock(input), ...blocks].join('\n\n');
+    /* Aspect-ratio block sits second — right after CONTEXT — so the
+     * model encounters the canvas constraint before any layout
+     * advice from the reference-fidelity / design-principles blocks.
+     * Imagen's `parameters.aspectRatio` is the primary signal; this
+     * is a textual backstop for the cases where Imagen silently
+     * letterboxes a square composition into a 9:16 canvas. */
+    return [
+      this.buildContextBlock(input),
+      aspectRatioBlock(input.aspectRatio),
+      ...blocks,
+    ].join('\n\n');
   }
 
   private buildContextBlock({
@@ -191,4 +202,35 @@ function staticBlocksWithoutReference(): string[] {
     CTA_WITHOUT_REFERENCE,
     FINAL_WITHOUT_REFERENCE,
   ];
+}
+
+/* Per-ratio framing. Specific descriptions for the three Imagen-native
+ * ratios so the model has concrete vocabulary ("portrait", "square",
+ * "wide horizontal") to anchor on. Falls back to a generic phrasing if
+ * the dispatcher ever passes a ratio we haven't enumerated here. */
+const ASPECT_RATIO_DESCRIPTIONS: Record<string, string> = {
+  '9:16':
+    '9:16 portrait (vertical, mobile-first — 1080×1920 territory). Compose for a TALL frame: stack the hero subject, brand logo, headline, and CTA vertically.',
+  '1:1':
+    '1:1 square (1080×1080). Compose for a balanced, symmetric frame.',
+  '16:9':
+    '16:9 landscape (wide horizontal — 1920×1080 territory). Compose for a WIDE frame: the hero subject and copy sit side-by-side.',
+};
+
+function aspectRatioBlock(aspectRatio: string): string {
+  const framing =
+    ASPECT_RATIO_DESCRIPTIONS[aspectRatio] ??
+    `${aspectRatio}. Compose for that exact canvas shape.`;
+  return `OUTPUT ASPECT RATIO (strictest constraint — overrides reference shape):
+Target canvas: ${framing}
+
+Hard rules:
+- The composition MUST fill the entire ${aspectRatio} canvas edge-to-edge.
+- Do NOT produce a square or differently-shaped image padded with black,
+  white, or any colored bars. No letterboxing, no pillarboxing.
+- Do NOT preserve the canvas shape of the reference image — if the
+  reference is square or 16:9 and the target is ${aspectRatio}, RE-compose
+  the layout natively for ${aspectRatio}.
+- Treat any letterbox / pillarbox result as a failure mode and re-roll
+  the composition rather than ship it.`;
 }

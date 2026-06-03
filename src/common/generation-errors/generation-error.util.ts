@@ -54,6 +54,13 @@ export function mapGenerationErrorForUser(raw: string): string {
     );
   }
 
+  if (lower.includes('aspect ratio mismatch')) {
+    return (
+      'התמונה חזרה ביחס תצוגה שונה מהמבוקש (לרוב מרובע במקום סטורי). ' +
+      'לחצו "יצירה נוספת" — המודל מייצר ביחס הנכון רוב הפעמים.'
+    );
+  }
+
   return raw;
 }
 

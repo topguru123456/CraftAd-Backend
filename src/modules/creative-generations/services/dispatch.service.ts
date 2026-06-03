@@ -97,6 +97,11 @@ export class DispatchService {
       },
       project: this.draftToPromptInput(project.draft),
       referenceMode: inputs.gcfImages.referenceMode,
+      /* Mirrors what we send the GCF as `aspect_ratio`. The dispatcher
+       * payload is the primary channel; passing the same value into
+       * the prompt is the textual backstop so the model has the
+       * constraint both as an API parameter AND in its instructions. */
+      aspectRatio: inputs.aspectRatio,
     });
 
     const row = await this.prisma.creativeGeneration.create({
