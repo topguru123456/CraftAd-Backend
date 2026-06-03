@@ -38,7 +38,7 @@ export interface CopywritingPromptInput {
     locationHe: string;        // conversion location display
     purposeHe: string;         // campaign goal display
     audienceDisplay: string;   // target audience display
-    platform: string;          // 'Facebook' | 'Instagram' | ...
+    platform: string;          // 'Meta' | 'TikTok' | ...
     primaryTone: string;       // user-picked tone from offer step
     brief: string;             // long-form description (5000-char cap)
     topics: string[];          // optional anchor keywords
@@ -107,10 +107,16 @@ function platformTuning(platform: string): string {
   if (key.includes('instagram') && key.includes('story')) {
     return '20–40 words, conversational, emoji-friendly, one clear CTA. No paragraph breaks.';
   }
-  if (key.includes('instagram') || key.includes('tiktok')) {
+  if (key.includes('tiktok')) {
+    return '40–100 words, native to short-form video, opens with a hook, sparing emoji use (1–2 max), one clear CTA. No paragraph breaks.';
+  }
+  if (key.includes('instagram')) {
     return '50–120 words, conversational and warm, sparing emoji use (1–2 max), one clear CTA. Short paragraphs.';
   }
-  if (key.includes('facebook')) {
+  // Meta = unified Facebook + Instagram surface. Lean closer to Facebook
+  // (longer, full sentences) since Meta-tagged briefs usually run on the
+  // Facebook feed alongside the IG variants.
+  if (key.includes('meta') || key.includes('facebook')) {
     return '80–150 words, full sentences, persuasive but not pushy, one clear CTA. 2–4 short paragraphs.';
   }
   if (key.includes('linkedin')) {
