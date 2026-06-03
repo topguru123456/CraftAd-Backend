@@ -1,6 +1,7 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Brand, Prisma } from '@prisma/client';
 import { PrismaService } from '../../../common/prisma/prisma.service';
+import { AvatarsService } from '../../avatars/services/avatars.service';
 import { CreateBrandDto } from '../dto/create-brand.dto';
 import { UpdateBrandDto } from '../dto/update-brand.dto';
 
@@ -14,7 +15,12 @@ export type BrandWithCounts = Brand & {
 
 @Injectable()
 export class BrandsService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(BrandsService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly avatars: AvatarsService,
+  ) {}
 
   async list(userId: string): Promise<BrandWithCounts[]> {
     const rows = await this.prisma.brand.findMany({
@@ -37,10 +43,30 @@ export class BrandsService {
     return brand;
   }
 
-  create(userId: string, dto: CreateBrandDto): Promise<Brand> {
-    return this.prisma.brand.create({
+  async create(userId: string, dto: CreateBrandDto): Promise<Brand> {
+    const brand = await this.prisma.brand.create({
       data: this.toCreateData(userId, dto),
     });
+
+    /* Auto-trigger the brand's first avatar. Fire-and-forget because
+     * the pipeline is slow (~20–40s: GPT-4o persona → Gemini portrait)
+     * and we don't want to block the brand-create HTTP response on it.
+     *
+     * Failure here MUST NEVER fail brand creation — the user always
+     * gets their brand back, and can manually trigger an avatar from
+     * the Avatars page if the auto-attempt didn't produce one. The
+     * `.catch` swallows the rejection so Node won't log an unhandled-
+     * rejection warning; `void` documents the intent for readers and
+     * appeases the no-floating-promises lint rule. */
+    void this.avatars.create(userId, brand.id).catch((err) => {
+      this.logger.warn(
+        `Auto-avatar generation failed for brand ${brand.id}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    });
+
+    return brand;
   }
 
   async update(

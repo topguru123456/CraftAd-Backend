@@ -10,5 +10,11 @@ import { OpenAiAvatarService } from './services/openai-avatar.service';
   imports: [PrismaModule, SupabaseStorageModule],
   controllers: [AvatarsController],
   providers: [AvatarsService, OpenAiAvatarService, GeminiPortraitService],
+  // Exported so BrandsModule can fire-and-forget an avatar generation
+  // when a new brand is created. The service-level call bypasses the
+  // controller-level @PlanLimit guard, which is fine here because the
+  // auto-trigger isn't a user-initiated action — the brand quota is
+  // already consumed at this point and the avatar is bonus output.
+  exports: [AvatarsService],
 })
 export class AvatarsModule {}
