@@ -26,10 +26,15 @@ import { PromptAssemblerService } from './prompt-assembler.service';
 const RATIO_MAP: Record<string, string> = {
   square: '1:1',
   story: '9:16',
-  portrait: '1:1',
+  // `portrait` was historically labeled 4:5 in the wizard, but Imagen's
+  // accepted set is {1:1, 9:16, 16:9, 3:4, 4:3}, so we send the closest
+  // native value (3:4). The wizard config now also reflects '3:4' so
+  // there's no longer a label/wire-value mismatch.
+  portrait: '3:4',
   '1:1': '1:1',
   '9:16': '9:16',
   '16:9': '16:9',
+  '3:4': '3:4',
 };
 
 const DISPATCHER_TIMEOUT_MS = 10_000;
@@ -179,9 +184,6 @@ export class DispatchService {
       throw new BadRequestException(
         `ratio '${project.aspectRatio}' is not supported`,
       );
-    }
-    if (project.aspectRatio === 'portrait') {
-      this.logger.warn('portrait (4:5) coerced to 1:1 for GCF');
     }
 
     const logoUrl = ensureHttps(brand.logoUrl);

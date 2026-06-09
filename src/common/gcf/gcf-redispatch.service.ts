@@ -16,10 +16,11 @@ import { ensureHttps } from '../../modules/creative-generations/lib/gcf-url';
 const RATIO_MAP: Record<string, string> = {
   square: '1:1',
   story: '9:16',
-  portrait: '1:1',
+  portrait: '3:4',
   '1:1': '1:1',
   '9:16': '9:16',
   '16:9': '16:9',
+  '3:4': '3:4',
 };
 
 const DISPATCHER_TIMEOUT_MS = 10_000;

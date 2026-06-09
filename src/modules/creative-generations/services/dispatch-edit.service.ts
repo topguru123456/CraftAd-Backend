@@ -17,14 +17,16 @@ const EDIT_SOURCE_SIGNED_URL_TTL_SEC = 600;
 const DISPATCHER_TIMEOUT_MS = 10_000;
 
 // Wizard ratio id → GCF edit dispatcher's accepted aspect_ratio. Same map
-// as the generate dispatcher.
+// as the generate dispatcher (see dispatch.service.ts for the rationale
+// behind the portrait → 3:4 coercion).
 const RATIO_MAP: Record<string, string> = {
   square: '1:1',
   story: '9:16',
-  portrait: '1:1',
+  portrait: '3:4',
   '1:1': '1:1',
   '9:16': '9:16',
   '16:9': '16:9',
+  '3:4': '3:4',
 };
 
 // Shape the GCF edit dispatcher accepts per the spec the user gave earlier:

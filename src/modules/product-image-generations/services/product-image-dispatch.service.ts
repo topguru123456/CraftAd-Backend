@@ -21,14 +21,17 @@ import {
 } from '../../../common/generation-errors/generation-error.util';
 import { ProductImagePromptService } from './product-image-prompt.service';
 
-/** Wizard ratio → GCF aspect_ratio (portrait coerced to 1:1). */
+/** Wizard ratio → GCF aspect_ratio. `portrait` maps to '3:4' — the
+ *  closest portrait ratio Imagen supports natively. See the matching
+ *  comment in creative-generations/dispatch.service.ts. */
 const RATIO_MAP: Record<string, string> = {
   square: '1:1',
   story: '9:16',
-  portrait: '1:1',
+  portrait: '3:4',
   '1:1': '1:1',
   '9:16': '9:16',
   '16:9': '16:9',
+  '3:4': '3:4',
 };
 
 const DISPATCHER_TIMEOUT_MS = 10_000;
@@ -224,12 +227,6 @@ export class ProductImageDispatchService {
         `ratio '${project.aspectRatio}' is not supported`,
       );
     }
-    if (project.aspectRatio === 'portrait') {
-      this.logger.warn(
-        'portrait (4:5) coerced to 1:1 — dispatcher does not accept 4:5',
-      );
-    }
-
     const productImgUrl = ensureHttps(
       (project.draft as { images?: Array<{ url?: string }> })?.images?.[0]?.url,
     );

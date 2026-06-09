@@ -14,21 +14,25 @@
 
 /* Frontend ratio id → Imagen-API ratio string.
  *
- * `portrait` (4:5) is intentionally coerced to '1:1' until the GCF
- * dispatcher gains real 4:5 support — surfacing as a warning in the
- * dispatch service rather than failing the request.
+ * `portrait` is mapped to '3:4' — the closest portrait ratio Imagen
+ * supports natively. The wizard's historical label was '4:5'
+ * (1080×1350), but Imagen's accepted set is {1:1, 9:16, 16:9, 3:4,
+ * 4:3} so 4:5 isn't a valid wire value. 3:4 (1080×1440) is one row
+ * taller than 4:5 — close enough that the user gets a portrait
+ * image instead of the square they were previously coerced into.
  *
  * The keys also include the already-mapped values ('1:1', '9:16',
- * '16:9') as identity entries so the helper is idempotent: callers
- * that already hold a mapped value get the same value back. */
+ * '16:9', '3:4') as identity entries so the helper is idempotent:
+ * callers that already hold a mapped value get the same value back. */
 export const ASPECT_RATIO_MAP: Readonly<Record<string, string>> = Object.freeze({
   square: '1:1',
   story: '9:16',
-  portrait: '1:1',
+  portrait: '3:4',
   landscape: '16:9',
   '1:1': '1:1',
   '9:16': '9:16',
   '16:9': '16:9',
+  '3:4': '3:4',
 });
 
 /* Parse '9:16' → 0.5625. Returns null on garbage input so callers can

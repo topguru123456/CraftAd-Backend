@@ -211,6 +211,8 @@ function staticBlocksWithoutReference(): string[] {
 const ASPECT_RATIO_DESCRIPTIONS: Record<string, string> = {
   '9:16':
     '9:16 portrait (vertical, mobile-first — 1080×1920 territory). Compose for a TALL frame: stack the hero subject, brand logo, headline, and CTA vertically.',
+  '3:4':
+    '3:4 portrait (taller than wide, 1080×1440 territory). Compose for a portrait frame — the hero subject occupies the upper portion with copy + CTA stacked below.',
   '1:1':
     '1:1 square (1080×1080). Compose for a balanced, symmetric frame.',
   '16:9':
