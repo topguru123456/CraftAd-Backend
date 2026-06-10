@@ -131,18 +131,34 @@ export class BrandFetchService {
       ? brand.industries.eic
       : [];
 
-    // brand-level colors + per-logo colors, deduped by exact hex
-    // (case-insensitive). context.dev splits the full set across
-    // `brand.colors` and `logos[i].colors` for some brands, so we
-    // walk both. Order is preserved (brand-level first, then logo-
-    // extracted). We trust context.dev's ordering and don't try to
-    // be smart beyond exact-hex dedup — earlier versions of this
-    // code did perceptual-distance dedup and vibrancy reordering,
-    // but the added complexity wasn't paying for itself; surface
-    // any noise as a context.dev problem, not a us problem.
+    // Color extraction:
+    //
+    //   - logos[i].colors come FIRST. context.dev attaches a curated
+    //     color to each logo entry — that's the brand's identity
+    //     color for that mark. Walking logos in their original
+    //     array order surfaces the most-representative color first,
+    //     because context.dev orders logos by relevance (the same
+    //     reason pickDefaultLogo can just take `logos[0]`).
+    //
+    //   - brand.colors come SECOND, as a supplement to fill any
+    //     remaining slots up to MAX_COLORS. brand.colors are
+    //     extracted by image analysis across the whole site, which
+    //     ranks them by visual frequency — that puts typography
+    //     black at the top, which is why we don't lead with them.
+    //
+    //   - MAX_COLORS = 3. Real brand palettes are 2–4 colors;
+    //     clamping at 3 keeps extraction noise out of the wizard
+    //     swatch row and matches the product decision documented
+    //     in the FE config.
+    //
+    //   - Exact-hex dedup. No perceptual gymnastics — if two near-
+    //     duplicate hexes both squeeze into the top 3, the user
+    //     can manually remove one in the wizard.
+    const MAX_COLORS = 3;
     const seen = new Set<string>();
     const colors: Array<{ id: string; hex: string; name: string }> = [];
     const pushColor = (raw: unknown) => {
+      if (colors.length >= MAX_COLORS) return;
       if (!raw || typeof raw !== 'object') return;
       const hex = (raw as ContextDevColor).hex;
       if (typeof hex !== 'string' || !hex.trim()) return;
@@ -155,11 +171,11 @@ export class BrandFetchService {
         name: (raw as ContextDevColor).name ?? '',
       });
     };
-    for (const c of rawColors) pushColor(c);
     for (const logo of logos) {
       if (!Array.isArray(logo.colors)) continue;
       for (const c of logo.colors) pushColor(c);
     }
+    for (const c of rawColors) pushColor(c);
 
     return {
       name: brand.title ?? '',
@@ -175,16 +191,30 @@ export class BrandFetchService {
     };
   }
 
-  // Prefer full-wordmark in light mode; fall back to any wordmark, then first.
+  /* Pick the upstream logo we'll show in the brand card thumbnail
+   * and pass to the GCF as the `logo` slot.
+   *
+   * Trusts context.dev's array order: their model puts the most-
+   * representative logo first within each type bucket. The previous
+   * iteration tried to be clever by preferring `mode === 'light'`
+   * inside the icon bucket, but that broke disney — disney's
+   * primary icon is the purple 720×720 with mode
+   * `has_opaque_background`, and the mode filter pushed it past a
+   * smaller 128×128 `mode: light` variant.
+   *
+   * Preference order:
+   *   1. First entry where type='icon'  — compact identity mark,
+   *      reads well at thumbnail sizes.
+   *   2. First entry where type='logo'  — wordmark fallback when
+   *      no icon exists.
+   *   3. logos[0]                       — last resort. */
   private pickDefaultLogo(logos: ContextDevLogo[]): ContextDevLogo | null {
     if (!logos.length) return null;
-    const lightLogo = logos.find(
-      (l) => l.type === 'logo' && l.mode === 'light',
+    return (
+      logos.find((l) => l.type === 'icon') ??
+      logos.find((l) => l.type === 'logo') ??
+      logos[0]
     );
-    if (lightLogo) return lightLogo;
-    const anyLogo = logos.find((l) => l.type === 'logo');
-    if (anyLogo) return anyLogo;
-    return logos[0];
   }
 
   // context.dev's error envelope varies (plain message, Zod issues array,
