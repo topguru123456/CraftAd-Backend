@@ -131,27 +131,35 @@ export class BrandFetchService {
       ? brand.industries.eic
       : [];
 
-    // Two-pass color extraction:
-    //
-    //   1. Collect every unique-hex candidate from `brand.colors` plus
-    //      each `logos[i].colors`. context.dev splits the full set
-    //      across those arrays for some brands, so merging surfaces
-    //      everything the API actually returned.
-    //
-    //   2. Collapse perceptually-near-duplicate hexes into one
-    //      canonical entry. context.dev re-extracts colors from every
-    //      image surface it analyzes (logo, hero, page bg) and each
-    //      surface contributes slightly-shifted variants of the same
-    //      brand color. Without this pass, brands like Dreamworks
-    //      surface 9 hexes that visually collapse to 3 colors. With
-    //      it, the user sees the 3 canonical ones.
-    const exactDeduped = collectExactUnique(rawColors, logos);
-    const collapsed = collapseSimilarColors(exactDeduped);
-    const colors = collapsed.map((c) => ({
-      id: randomUUID(),
-      hex: c.hex,
-      name: c.name,
-    }));
+    // brand-level colors + per-logo colors, deduped by exact hex
+    // (case-insensitive). context.dev splits the full set across
+    // `brand.colors` and `logos[i].colors` for some brands, so we
+    // walk both. Order is preserved (brand-level first, then logo-
+    // extracted). We trust context.dev's ordering and don't try to
+    // be smart beyond exact-hex dedup — earlier versions of this
+    // code did perceptual-distance dedup and vibrancy reordering,
+    // but the added complexity wasn't paying for itself; surface
+    // any noise as a context.dev problem, not a us problem.
+    const seen = new Set<string>();
+    const colors: Array<{ id: string; hex: string; name: string }> = [];
+    const pushColor = (raw: unknown) => {
+      if (!raw || typeof raw !== 'object') return;
+      const hex = (raw as ContextDevColor).hex;
+      if (typeof hex !== 'string' || !hex.trim()) return;
+      const key = hex.trim().toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      colors.push({
+        id: randomUUID(),
+        hex: hex.trim(),
+        name: (raw as ContextDevColor).name ?? '',
+      });
+    };
+    for (const c of rawColors) pushColor(c);
+    for (const logo of logos) {
+      if (!Array.isArray(logo.colors)) continue;
+      for (const c of logo.colors) pushColor(c);
+    }
 
     return {
       name: brand.title ?? '',
@@ -210,189 +218,3 @@ export class BrandFetchService {
   }
 }
 
-/* ---------- Color-normalization helpers ---------- */
-
-interface ColorCandidate {
-  hex: string;
-  name: string;
-}
-
-/* Walks brand.colors plus every logo's per-image colors, returning a
- * list deduped by EXACT hex (case-insensitive). Preserves order so
- * brand-level colors stay ahead of logo-extracted ones. */
-function collectExactUnique(
-  rawColors: ContextDevColor[],
-  logos: ContextDevLogo[],
-): ColorCandidate[] {
-  const out: ColorCandidate[] = [];
-  const seen = new Set<string>();
-  const push = (raw: unknown) => {
-    if (!raw || typeof raw !== 'object') return;
-    const hex = (raw as ContextDevColor).hex;
-    if (typeof hex !== 'string' || !hex.trim()) return;
-    const key = hex.trim().toLowerCase();
-    if (seen.has(key)) return;
-    seen.add(key);
-    out.push({ hex: hex.trim(), name: (raw as ContextDevColor).name ?? '' });
-  };
-  for (const c of rawColors) push(c);
-  for (const logo of logos) {
-    if (!Array.isArray(logo.colors)) continue;
-    for (const c of logo.colors) push(c);
-  }
-  return out;
-}
-
-/* Euclidean RGB distance threshold below which two colors are
- * considered "the same brand color, slightly shifted." 22 keeps
- * obvious near-duplicates from collapsing intentional close pairs.
- *
- * Calibration:
- *   - #0c326f vs #0f2f6e        → ~4.4  (collapses, correct)
- *   - #7b9cc6 vs #8294b4        → ~20.9 (collapses, correct)
- *   - #1d4ed8 vs #2563eb (real
- *     two-shade brand palette)  → ~29.4 (preserved, correct)
- *
- * The 0-441 max range comes from sqrt(255² + 255² + 255²) = pure
- * white vs pure black. 22 is roughly 5% of that. */
-const COLOR_DISTANCE_THRESHOLD = 22;
-
-/* Cap on canonical colors returned to the wizard. Real brand
- * palettes are 3-5 colors; anything beyond 6 is almost certainly
- * extraction noise that adds nothing for the user. */
-const MAX_CANONICAL_COLORS = 6;
-
-/* Vibrancy threshold for the chromatic/achromatic partition that
- * runs after deduplication. Vibrancy = HSV saturation × HSV value,
- * both in [0..1], so a "vibrant" color has both real hue AND
- * sufficient brightness. Calibration:
- *   - #1d4ed8 (brand blue, sat 0.87, val 0.85) → vibrancy ≈ 0.74 ✓
- *   - #000000 (black, sat 0, val 0)            → 0           ✗
- *   - #808080 (mid gray, sat 0, val 0.5)       → 0           ✗
- *   - #0a0820 (near-black tinted, sat 0.7,
- *              val 0.13)                       → 0.09        ✗
- *   - #2f4858 (dark muted blue, sat 0.34,
- *              val 0.35)                       → 0.12        ✓
- *
- * 0.08 cleanly separates "genuinely a brand color" from
- * "utility/typographic black-white-gray". Tuned down from 0.10 so
- * dark-but-real brand colors don't get demoted. */
-const VIBRANCY_THRESHOLD = 0.08;
-
-/* Collapse perceptually-similar hexes into a canonical subset, then
- * promote chromatic colors to the front.
- *
- * Phase 1 — dedup. Walks the input list once. Each candidate either:
- *   - matches an existing kept color within COLOR_DISTANCE_THRESHOLD →
- *     replace the existing entry IF the candidate is more saturated
- *     (HSV S). The brand's actual color is usually the most-saturated
- *     variant; washed-out shifts come from JPEG compression / image
- *     blending against page backgrounds.
- *   - matches nothing → added as a new canonical entry, until we hit
- *     MAX_CANONICAL_COLORS.
- *
- * Phase 2 — chromaticity sort. context.dev orders colors by visual
- * frequency in the source images. For "primary brand color"
- * purposes that's the wrong metric: brands use black/white/gray for
- * typography (high frequency) and a vibrant accent for identity
- * (lower frequency). Users expect the accent at `colors[0]`, not
- * the utility black. Stable partition by vibrancy keeps the
- * relative ordering inside each group, so we're not making
- * editorial calls about which blue beats which red — just moving
- * achromatic colors to the tail.
- *
- * Example for a brand context.dev returns as [black, blue]:
- *   - after dedup: [black, blue]
- *   - after partition: [blue, black]    ← user gets blue as primary
- *
- * For a truly monochrome brand (e.g., only [black, white, gray]):
- *   - all achromatic, all in tail group
- *   - original relative order preserved → no change observable */
-function collapseSimilarColors(input: ColorCandidate[]): ColorCandidate[] {
-  const kept: Array<ColorCandidate & {
-    rgb: [number, number, number];
-    saturation: number;
-  }> = [];
-
-  for (const candidate of input) {
-    const rgb = parseHexToRgb(candidate.hex);
-    if (!rgb) continue;
-    const saturation = hsvSaturation(rgb);
-
-    const nearIdx = kept.findIndex(
-      (k) => rgbEuclideanDistance(k.rgb, rgb) < COLOR_DISTANCE_THRESHOLD,
-    );
-    if (nearIdx >= 0) {
-      if (saturation > kept[nearIdx].saturation) {
-        kept[nearIdx] = {
-          hex: candidate.hex,
-          name: candidate.name,
-          rgb,
-          saturation,
-        };
-      }
-      continue;
-    }
-
-    if (kept.length >= MAX_CANONICAL_COLORS) break;
-    kept.push({ hex: candidate.hex, name: candidate.name, rgb, saturation });
-  }
-
-  // Stable partition: chromatic first, achromatic at the tail.
-  const chromatic: typeof kept = [];
-  const achromatic: typeof kept = [];
-  for (const c of kept) {
-    if (hsvVibrancy(c.rgb) >= VIBRANCY_THRESHOLD) chromatic.push(c);
-    else achromatic.push(c);
-  }
-
-  return [...chromatic, ...achromatic].map(({ hex, name }) => ({ hex, name }));
-}
-
-function parseHexToRgb(hex: string): [number, number, number] | null {
-  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
-  if (!m) return null;
-  const v = m[1];
-  return [
-    parseInt(v.slice(0, 2), 16),
-    parseInt(v.slice(2, 4), 16),
-    parseInt(v.slice(4, 6), 16),
-  ];
-}
-
-function rgbEuclideanDistance(
-  a: [number, number, number],
-  b: [number, number, number],
-): number {
-  const dr = a[0] - b[0];
-  const dg = a[1] - b[1];
-  const db = a[2] - b[2];
-  return Math.sqrt(dr * dr + dg * dg + db * db);
-}
-
-/* HSV S component, 0..1. We use this instead of HSL because a brand
- * color like pure #ff0000 reads as "maximum saturation" the way
- * users intuit it (HSL would assign saturation 1.0 to #ff8080 too,
- * since saturation in HSL relates to distance from gray at the same
- * lightness). HSV behaves the way you'd want for "which variant is
- * the most vivid?" */
-function hsvSaturation([r, g, b]: [number, number, number]): number {
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  if (max === 0) return 0;
-  return (max - min) / max;
-}
-
-/* HSV saturation × HSV value, 0..1. Captures "how much of a real
- * color is this?" — both real hue (saturation) AND enough brightness
- * to read as that hue (value). Used to separate genuine brand-
- * identity colors from utility black/white/gray AND from near-black
- * tinted darks that the eye still reads as black. */
-function hsvVibrancy([r, g, b]: [number, number, number]): number {
-  const max = Math.max(r, g, b);
-  if (max === 0) return 0;
-  const min = Math.min(r, g, b);
-  const saturation = (max - min) / max;
-  const value = max / 255;
-  return saturation * value;
-}
