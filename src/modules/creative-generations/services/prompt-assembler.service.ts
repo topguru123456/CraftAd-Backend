@@ -38,6 +38,13 @@ export class PromptAssemblerService {
      * is a textual backstop for the cases where Imagen silently
      * letterboxes a square composition into a 9:16 canvas. */
     return [
+      /* INPUT IMAGES sits BEFORE every other block — including
+       * CONTEXT — so the model anchors on image-slot semantics
+       * before reading anything else. Without this, Gemini can swap
+       * the example with the product when their visual content is
+       * similar (e.g., both look like full-frame ads), producing
+       * randomly-correct outputs the user can't reproduce. */
+      inputImagesBlock(input.referenceMode),
       this.buildContextBlock(input),
       aspectRatioBlock(input.aspectRatio),
       ...blocks,
@@ -52,27 +59,99 @@ export class PromptAssemblerService {
     project: PromptProjectInput;
   }): string {
     const lines = ['CONTEXT and INPUTS:'];
-    lines.push(`Business Website: ${brand.websiteUrl ?? ''}`);
+    /* Skip blank lines. Inspired-creation passes most project fields
+     * as empty strings (no campaign metadata wizard), and rendering
+     * "Product Name: " with nothing after it reads to the model as
+     * "the product has no name, figure it out yourself" — which
+     * pushes it to invent a subject from the attachments and is the
+     * proximate cause of the "sometimes uses inspo, sometimes uses
+     * product" randomness. Better: omit the line entirely when we
+     * have nothing to say. */
+    const push = (label: string, value: string | undefined | null) => {
+      const trimmed = (value ?? '').trim();
+      if (trimmed) lines.push(`${label}: ${trimmed}`);
+    };
+
+    push('Business Website', brand.websiteUrl);
     lines.push(
       'Brand Logo: attached as the logo image input (use that file in the composition, not the website).',
     );
-    lines.push(`Business Brief: ${brand.description ?? ''}`);
-    lines.push(`Product Name: ${project.productName ?? ''}`);
-    lines.push(`Product Brief: ${project.description ?? ''}`);
-    lines.push(`Project Nature: ${project.natureHe ?? ''}`);
-    lines.push(`The conversion will be in: ${project.locationHe ?? ''}`);
-    lines.push(`The Campaign target is: ${project.purposeHe ?? ''}`);
-    lines.push(`General Campaign Brief: Audience - ${project.audienceDisplay ?? ''}`);
+    push('Business Brief', brand.description);
+    push('Product Name', project.productName);
+    push('Product Brief', project.description);
+    push('Project Nature', project.natureHe);
+    push('The conversion will be in', project.locationHe);
+    push('The Campaign target is', project.purposeHe);
+    push('General Campaign Brief: Audience -', project.audienceDisplay);
     const secondary = brand.secondaryColorsJoined;
-    lines.push(
-      `Brand Colors: ${secondary ? `${brand.primaryColor}, ${secondary}` : brand.primaryColor}`,
-    );
-    lines.push(`The Ads are for: ${project.platform ?? ''}`);
-    if (project.landingPageUrl?.trim()) {
-      lines.push(`Landing page link: ${project.landingPageUrl.trim()}`);
-    }
+    const colorsValue = secondary
+      ? `${brand.primaryColor}, ${secondary}`
+      : brand.primaryColor;
+    push('Brand Colors', colorsValue);
+    push('The Ads are for', project.platform);
+    push('Landing page link', project.landingPageUrl);
     return lines.join('\n');
   }
+}
+
+/* Image-slot disambiguation. Pins each of the four attached images to
+ * an explicit role so the model doesn't have to infer from visual
+ * similarity which is the product vs the reference vs the logo.
+ *
+ * Inspired-creation hits this hardest: the user's product photo and
+ * the inspo ad creative can look superficially similar (both
+ * full-frame, both branded, both styled), and without this block the
+ * model would often swap them — producing outputs whose subject was
+ * the inspo's subject instead of the user's product, or vice versa.
+ *
+ * The fallback variant (no user reference) explicitly tells the model
+ * to IGNORE the example slot, since in that path the dispatcher
+ * duplicates the logo into the example slot purely so the GCF doesn't
+ * reject the request for a missing image. */
+const INPUT_IMAGES_USER = `INPUT IMAGES — read this BEFORE anything else:
+You receive four images attached. Their roles are FIXED. Do not
+swap, recombine, or reinterpret them:
+
+  1. LOGO — the brand mark / wordmark. Place it visibly in the final
+     composition exactly as supplied. Never replace it with a
+     generated logo.
+
+  2. PRODUCT — the subject of THIS ad. The hero of the final frame
+     must be the subject shown in this image. If it's a physical
+     product (bottle, can, phone, etc.), feature THAT object. If it
+     shows a person or scene, feature THAT subject. The EXAMPLE AD
+     below does NOT override what the product is.
+
+  3. EXAMPLE AD — a style reference. Mimic its composition density,
+     color temperament, type weight, decorative motifs, and lighting
+     feel. DO NOT use the example's subject as your subject; DO NOT
+     copy its product. Style and layout reference only.
+
+  4. FONT REFERENCE — a typography sample. Use similar font weight /
+     style for headlines and CTAs.
+
+Failure modes to avoid:
+  - Treating the EXAMPLE AD's subject as the product.
+  - Treating the PRODUCT image as a style reference.
+  - Inventing a product that doesn't appear in either attachment.`;
+
+const INPUT_IMAGES_FALLBACK = `INPUT IMAGES — read this BEFORE anything else:
+You receive four images attached. Their roles are FIXED:
+
+  1. LOGO — the brand mark / wordmark. Place it visibly in the final
+     composition exactly as supplied.
+
+  2. PRODUCT — the subject of THIS ad. The hero of the final frame
+     must be the subject shown in this image.
+
+  3. EXAMPLE — pipeline placeholder, IGNORE. This slot is a duplicate
+     of the logo and carries no styling intent. Do not mimic it.
+
+  4. FONT REFERENCE — a typography sample. Use similar font weight /
+     style for headlines and CTAs.`;
+
+function inputImagesBlock(referenceMode: CampaignReferenceMode): string {
+  return referenceMode === 'user' ? INPUT_IMAGES_USER : INPUT_IMAGES_FALLBACK;
 }
 
 const BEHAVIOR_BLOCK = `BEHAVIOR:
