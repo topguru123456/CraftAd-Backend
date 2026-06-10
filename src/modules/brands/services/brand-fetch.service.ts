@@ -262,9 +262,27 @@ const COLOR_DISTANCE_THRESHOLD = 22;
  * extraction noise that adds nothing for the user. */
 const MAX_CANONICAL_COLORS = 6;
 
-/* Collapse perceptually-similar hexes into a canonical subset.
+/* Vibrancy threshold for the chromatic/achromatic partition that
+ * runs after deduplication. Vibrancy = HSV saturation × HSV value,
+ * both in [0..1], so a "vibrant" color has both real hue AND
+ * sufficient brightness. Calibration:
+ *   - #1d4ed8 (brand blue, sat 0.87, val 0.85) → vibrancy ≈ 0.74 ✓
+ *   - #000000 (black, sat 0, val 0)            → 0           ✗
+ *   - #808080 (mid gray, sat 0, val 0.5)       → 0           ✗
+ *   - #0a0820 (near-black tinted, sat 0.7,
+ *              val 0.13)                       → 0.09        ✗
+ *   - #2f4858 (dark muted blue, sat 0.34,
+ *              val 0.35)                       → 0.12        ✓
  *
- * Walks the input list once. Each candidate either:
+ * 0.08 cleanly separates "genuinely a brand color" from
+ * "utility/typographic black-white-gray". Tuned down from 0.10 so
+ * dark-but-real brand colors don't get demoted. */
+const VIBRANCY_THRESHOLD = 0.08;
+
+/* Collapse perceptually-similar hexes into a canonical subset, then
+ * promote chromatic colors to the front.
+ *
+ * Phase 1 — dedup. Walks the input list once. Each candidate either:
  *   - matches an existing kept color within COLOR_DISTANCE_THRESHOLD →
  *     replace the existing entry IF the candidate is more saturated
  *     (HSV S). The brand's actual color is usually the most-saturated
@@ -273,10 +291,23 @@ const MAX_CANONICAL_COLORS = 6;
  *   - matches nothing → added as a new canonical entry, until we hit
  *     MAX_CANONICAL_COLORS.
  *
- * Stable iteration: a candidate that drops keeps the position of the
- * winner. Order through the function reflects input order, with the
- * understanding that brand-level colors precede logo-extracted ones
- * (so brand-level colors generally win position ties). */
+ * Phase 2 — chromaticity sort. context.dev orders colors by visual
+ * frequency in the source images. For "primary brand color"
+ * purposes that's the wrong metric: brands use black/white/gray for
+ * typography (high frequency) and a vibrant accent for identity
+ * (lower frequency). Users expect the accent at `colors[0]`, not
+ * the utility black. Stable partition by vibrancy keeps the
+ * relative ordering inside each group, so we're not making
+ * editorial calls about which blue beats which red — just moving
+ * achromatic colors to the tail.
+ *
+ * Example for a brand context.dev returns as [black, blue]:
+ *   - after dedup: [black, blue]
+ *   - after partition: [blue, black]    ← user gets blue as primary
+ *
+ * For a truly monochrome brand (e.g., only [black, white, gray]):
+ *   - all achromatic, all in tail group
+ *   - original relative order preserved → no change observable */
 function collapseSimilarColors(input: ColorCandidate[]): ColorCandidate[] {
   const kept: Array<ColorCandidate & {
     rgb: [number, number, number];
@@ -307,7 +338,15 @@ function collapseSimilarColors(input: ColorCandidate[]): ColorCandidate[] {
     kept.push({ hex: candidate.hex, name: candidate.name, rgb, saturation });
   }
 
-  return kept.map(({ hex, name }) => ({ hex, name }));
+  // Stable partition: chromatic first, achromatic at the tail.
+  const chromatic: typeof kept = [];
+  const achromatic: typeof kept = [];
+  for (const c of kept) {
+    if (hsvVibrancy(c.rgb) >= VIBRANCY_THRESHOLD) chromatic.push(c);
+    else achromatic.push(c);
+  }
+
+  return [...chromatic, ...achromatic].map(({ hex, name }) => ({ hex, name }));
 }
 
 function parseHexToRgb(hex: string): [number, number, number] | null {
@@ -342,4 +381,18 @@ function hsvSaturation([r, g, b]: [number, number, number]): number {
   const min = Math.min(r, g, b);
   if (max === 0) return 0;
   return (max - min) / max;
+}
+
+/* HSV saturation × HSV value, 0..1. Captures "how much of a real
+ * color is this?" — both real hue (saturation) AND enough brightness
+ * to read as that hue (value). Used to separate genuine brand-
+ * identity colors from utility black/white/gray AND from near-black
+ * tinted darks that the eye still reads as black. */
+function hsvVibrancy([r, g, b]: [number, number, number]): number {
+  const max = Math.max(r, g, b);
+  if (max === 0) return 0;
+  const min = Math.min(r, g, b);
+  const saturation = (max - min) / max;
+  const value = max / 255;
+  return saturation * value;
 }
