@@ -31,13 +31,23 @@ const GEMINI_URL =
   'gemini-3-pro-image-preview:generateContent';
 const BUCKET = 'avatar-portraits';
 
-const PORTRAIT_INSTRUCTION = `Create a realistic portrait photo of the brand avatar described below. The image should look like an authentic high-quality photograph, not an illustration or cartoon.
+/* Soft on photorealism (vs. the previous "must look like an
+ * authentic photograph" wording). gemini-2.5-flash-image and even
+ * gemini-3-pro-image-preview show measurable refusal rates on
+ * "produce a photorealistic photo of a specific person" prompts —
+ * the model returns finishReason=NO_IMAGE rather than firing the
+ * safety pathway, which makes it look like nothing's wrong from
+ * the API status code. Giving the model permission to deliver
+ * either a photo OR a high-fidelity stylized portrait drops the
+ * refusal rate significantly without compromising the avatar's
+ * "looks like a real persona" quality. */
+const PORTRAIT_INSTRUCTION = `Create a polished brand-persona portrait of the avatar described below. Photographic style is preferred, but a high-fidelity stylized (editorial illustration / 3D-rendered) portrait is acceptable — anything that reads as a premium brand profile image. Not a sketch, not a cartoon, not a comic.
 
-Follow these strict rules:
-- Represent the avatar's Gender, Age-Range, Title, and personality accurately.
+Follow these rules:
+- Represent the avatar's Gender, Age-Range, Title, and personality.
 - The avatar should appear confident, approachable, and aligned with the brand's tone and values.
 - Style the clothing, expression, and overall appearance to match the avatar's lifestyle, interests, and professional energy.
-- Use lighting and composition suitable for a premium brand profile photo.
+- Use lighting and composition suitable for a premium brand profile image.
 - Avoid props or elements that contradict the brand style.
 - No text, logos, or watermarks in the image.
 
@@ -91,13 +101,21 @@ export class GeminiPortraitService {
      *     because its reference-image input implicitly anchors image
      *     output. Enum is ALL CAPS per Google's convention.
      *
-     *   No `responseFormat.image.aspectRatio` — the public docs claim
-     *     string values like "1:1" / "16:9" work, but the actual
-     *     v1beta protobuf endpoint rejects them ("Invalid value at
-     *     '...AspectRatio', '1:1'"). Docs are out of date for this
-     *     preview API. Skipping the config entirely; the AvatarCard's
-     *     aspect-square + object-cover handles any output ratio
-     *     correctly via CSS crop.
+     *   responseFormat.image.aspectRatio = "1:1"
+     *     Forces a square portrait. Without this, gemini-3-pro-
+     *     image-preview defaults to 16:9 (landscape) which then
+     *     gets CSS-cropped to square in the AvatarCard, losing the
+     *     top and bottom of the actual subject. The previous code
+     *     skipped this config because gemini-2.5-flash-image
+     *     rejected the field outright ("Invalid value at
+     *     '...AspectRatio'"). The 3-pro-image-preview surface
+     *     accepts it (Google's own curl example uses the same
+     *     path), so the workaround is no longer needed.
+     *
+     *   responseFormat.image.imageSize = "1K"
+     *     1024-on-the-long-edge for 1:1 → 1024×1024. Plenty for an
+     *     avatar that ships into a ≤112px CSS slot; "2K"/"4K" would
+     *     just inflate bandwidth + latency for no visible gain.
      *
      *   safetySettings: BLOCK_NONE on all four categories
      *     Per handoff doc §7, Gemini's defaults reject some Hebrew
@@ -109,6 +127,12 @@ export class GeminiPortraitService {
       contents: [{ parts: [{ text: prompt }] }],
       generationConfig: {
         responseModalities: ['IMAGE'],
+        responseFormat: {
+          image: {
+            aspectRatio: '1:1',
+            imageSize: '1K',
+          },
+        },
       },
       safetySettings: [
         { category: 'HARM_CATEGORY_HARASSMENT',        threshold: 'BLOCK_NONE' },
