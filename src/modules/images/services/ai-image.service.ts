@@ -8,9 +8,16 @@ import { SupabaseStorageService } from '../../../common/storage/supabase-storage
 import { GenerateAiImageDto } from '../dto/generate-ai-image.dto';
 
 const BUCKET = 'campaign-uploads';
+/* Model: `gemini-3-pro-image-preview`. Same model the avatar pipeline
+ * uses (see modules/avatars/services/gemini-portrait.service.ts) —
+ * 2.5-flash-image was producing too many low-quality results on the
+ * wizard's "AI-generate product image" button. The `-preview` suffix
+ * is intentional: that's the current public identifier on
+ * ai.google.dev. When Google drops the suffix at GA, update both this
+ * constant and the matching one in the avatar service. */
 const GEMINI_URL =
   'https://generativelanguage.googleapis.com/v1beta/models/' +
-  'gemini-2.5-flash-image:generateContent';
+  'gemini-3-pro-image-preview:generateContent';
 
 // Static preamble — verbatim from the prior edge function. Keeps generation
 // quality consistent across the migration.

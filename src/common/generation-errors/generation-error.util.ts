@@ -1,12 +1,4 @@
-/** Shared generation failure mapping, logging helpers, and retry detection. */
-
-export const GCF_RATE_LIMIT_MAX_RETRIES = 3;
-
-const RATE_LIMIT_DELAYS_MS = [2000, 5000, 10000];
-
-export function rateLimitRetryDelayMs(attempt: number): number {
-  return RATE_LIMIT_DELAYS_MS[Math.min(attempt - 1, RATE_LIMIT_DELAYS_MS.length - 1)] ?? 10000;
-}
+/** Shared generation failure mapping + logging helpers. */
 
 export function isRetryableRateLimitError(raw: string): boolean {
   const lower = raw.toLowerCase();
@@ -22,10 +14,7 @@ export function mapGenerationErrorForUser(raw: string): string {
   const lower = raw.toLowerCase();
 
   if (isRetryableRateLimitError(raw)) {
-    return (
-      'עומס זמני בשרת Gemini (מכסה / 429). המערכת מנסה שוב אוטומטית — ' +
-      'אם הבקשה עדיין נכשלת, המתינו דקה ולחצו "יצירה נוספת".'
-    );
+    return 'עומס זמני בשרת ה-AI — נסו שוב בעוד דקה.';
   }
 
   if (
@@ -69,18 +58,11 @@ export function formatGenerationFailureLog(context: {
   kind: 'generate' | 'edit';
   raw: string;
   userMessage: string;
-  retrying?: boolean;
-  attempt?: number;
-  maxAttempts?: number;
 }): string {
-  const parts = [
+  return [
     `uid=${context.uid}`,
     `kind=${context.kind}`,
     `raw=${JSON.stringify(context.raw)}`,
     `userMessage=${JSON.stringify(context.userMessage)}`,
-  ];
-  if (context.retrying) {
-    parts.push(`retrying=true`, `attempt=${context.attempt}/${context.maxAttempts}`);
-  }
-  return parts.join(' ');
+  ].join(' ');
 }

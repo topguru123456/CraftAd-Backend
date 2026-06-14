@@ -4,11 +4,8 @@ import { PrismaService } from '../../../common/prisma/prisma.service';
 import { SupabaseStorageService } from '../../../common/storage/supabase-storage.service';
 import { ScoringService } from '../../scoring/services/scoring.service';
 import { WatermarkService } from '../../watermark/services/watermark.service';
-import { GcfRateLimitRetryService } from '../../../common/gcf/gcf-rate-limit-retry.service';
 import {
   formatGenerationFailureLog,
-  GCF_RATE_LIMIT_MAX_RETRIES,
-  isRetryableRateLimitError,
   mapGenerationErrorForUser,
 } from '../../../common/generation-errors/generation-error.util';
 import { validateImageRatio } from '../../../common/aspect-ratio/aspect-ratio.util';
@@ -43,7 +40,6 @@ export class CreativeWebhookService {
     private readonly storage: SupabaseStorageService,
     private readonly scoring: ScoringService,
     private readonly watermark: WatermarkService,
-    private readonly rateLimitRetry: GcfRateLimitRetryService,
   ) {}
 
   async handle(body: CreativeWebhookDto): Promise<WebhookOutcome> {
@@ -77,10 +73,8 @@ export class CreativeWebhookService {
     }
 
     if (body.status === 'error') {
+      // Retries are owned by the GCF dispatcher — we don't redispatch here.
       const raw = body.message ?? 'Generation failed';
-      if (await this.rateLimitRetry.tryScheduleGenerationRetry(row.id, raw)) {
-        return { ok: true, reason: 'rate_limit_retry' };
-      }
       await this.markFailed(row.id, raw);
       return { ok: true, reason: 'worker_error' };
     }
@@ -216,14 +210,7 @@ export class CreativeWebhookService {
   }
 
   private async markFailed(id: string, rawMessage: string): Promise<void> {
-    const row = await this.prisma.creativeGeneration.findUnique({
-      where: { id },
-      select: { gcfRetryCount: true },
-    });
-    const errorMessage = this.resolveUserErrorMessage(
-      rawMessage,
-      row?.gcfRetryCount ?? 0,
-    ).slice(0, 1000);
+    const errorMessage = mapGenerationErrorForUser(rawMessage).slice(0, 1000);
 
     this.logger.error(
       formatGenerationFailureLog({
@@ -231,8 +218,6 @@ export class CreativeWebhookService {
         kind: 'generate',
         raw: rawMessage,
         userMessage: errorMessage,
-        attempt: row?.gcfRetryCount,
-        maxAttempts: GCF_RATE_LIMIT_MAX_RETRIES,
       }),
     );
 
@@ -246,18 +231,5 @@ export class CreativeWebhookService {
         errorMessage,
       },
     });
-  }
-
-  private resolveUserErrorMessage(raw: string, retryCount: number): string {
-    if (
-      isRetryableRateLimitError(raw) &&
-      retryCount >= GCF_RATE_LIMIT_MAX_RETRIES
-    ) {
-      return (
-        'עומס זמני בשרת Gemini — ניסינו שוב אוטומטית מספר פעמים ללא הצלחה. ' +
-        'המתינו דקה ולחצו "יצירה נוספת".'
-      );
-    }
-    return mapGenerationErrorForUser(raw);
   }
 }

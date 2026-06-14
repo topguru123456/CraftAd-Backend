@@ -3,11 +3,8 @@ import { EditStatus } from '@prisma/client';
 import { PrismaService } from '../../../common/prisma/prisma.service';
 import { SupabaseStorageService } from '../../../common/storage/supabase-storage.service';
 import { WatermarkService } from '../../watermark/services/watermark.service';
-import { GcfRateLimitRetryService } from '../../../common/gcf/gcf-rate-limit-retry.service';
 import {
   formatGenerationFailureLog,
-  GCF_RATE_LIMIT_MAX_RETRIES,
-  isRetryableRateLimitError,
   mapGenerationErrorForUser,
 } from '../../../common/generation-errors/generation-error.util';
 import { CreativeEditWebhookDto } from '../dto/creative-edit-webhook.dto';
@@ -36,7 +33,6 @@ export class CreativeEditWebhookService {
     private readonly prisma: PrismaService,
     private readonly storage: SupabaseStorageService,
     private readonly watermark: WatermarkService,
-    private readonly rateLimitRetry: GcfRateLimitRetryService,
   ) {}
 
   async handle(body: CreativeEditWebhookDto): Promise<WebhookOutcome> {
@@ -58,9 +54,6 @@ export class CreativeEditWebhookService {
         typeof body.message === 'string' && body.message.trim()
           ? body.message.trim()
           : 'Edit failed';
-      if (await this.rateLimitRetry.tryScheduleEditRetry(row.id, raw)) {
-        return { ok: true, reason: 'rate_limit_retry' };
-      }
       await this.markFailed(row.id, raw);
       return { ok: true, reason: 'worker_error' };
     }
@@ -141,14 +134,7 @@ export class CreativeEditWebhookService {
   }
 
   private async markFailed(id: string, rawMessage: string): Promise<void> {
-    const row = await this.prisma.creativeGeneration.findUnique({
-      where: { id },
-      select: { editGcfRetryCount: true },
-    });
-    const userMessage = this.resolveUserErrorMessage(
-      rawMessage,
-      row?.editGcfRetryCount ?? 0,
-    ).slice(0, 1000);
+    const userMessage = mapGenerationErrorForUser(rawMessage).slice(0, 1000);
 
     this.logger.error(
       formatGenerationFailureLog({
@@ -156,8 +142,6 @@ export class CreativeEditWebhookService {
         kind: 'edit',
         raw: rawMessage,
         userMessage,
-        attempt: row?.editGcfRetryCount,
-        maxAttempts: GCF_RATE_LIMIT_MAX_RETRIES,
       }),
     );
 
@@ -171,18 +155,5 @@ export class CreativeEditWebhookService {
         editErrorMessage: userMessage,
       },
     });
-  }
-
-  private resolveUserErrorMessage(raw: string, retryCount: number): string {
-    if (
-      isRetryableRateLimitError(raw) &&
-      retryCount >= GCF_RATE_LIMIT_MAX_RETRIES
-    ) {
-      return (
-        'עומס זמני בשרת Gemini — ניסינו שוב אוטומטית מספר פעמים ללא הצלחה. ' +
-        'המתינו ונסו להחיל את העריכה שוב.'
-      );
-    }
-    return mapGenerationErrorForUser(raw);
   }
 }
