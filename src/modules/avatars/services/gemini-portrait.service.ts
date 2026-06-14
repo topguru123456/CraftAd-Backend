@@ -101,21 +101,21 @@ export class GeminiPortraitService {
      *     because its reference-image input implicitly anchors image
      *     output. Enum is ALL CAPS per Google's convention.
      *
-     *   responseFormat.image.aspectRatio = "1:1"
-     *     Forces a square portrait. Without this, gemini-3-pro-
-     *     image-preview defaults to 16:9 (landscape) which then
-     *     gets CSS-cropped to square in the AvatarCard, losing the
-     *     top and bottom of the actual subject. The previous code
-     *     skipped this config because gemini-2.5-flash-image
-     *     rejected the field outright ("Invalid value at
-     *     '...AspectRatio'"). The 3-pro-image-preview surface
-     *     accepts it (Google's own curl example uses the same
-     *     path), so the workaround is no longer needed.
+     *   imageConfig.aspectRatio = "1:1", imageConfig.imageSize = "1K"
+     *     Square 1024×1024 output. The Gemini 3 model accepts
+     *     these string values through `generationConfig.imageConfig`
+     *     specifically — NOT through `generationConfig.responseFormat.
+     *     image`. Both paths appear in Google's docs but they
+     *     dispatch to different protobuf messages; the
+     *     `ImageResponseFormat.AspectRatio` enum under the
+     *     `responseFormat` path is older and rejects "1:1" / "1K"
+     *     as invalid values (we tried — that's where the previous
+     *     iteration of this code died). The newer `imageConfig`
+     *     path accepts the human-readable strings as documented.
      *
-     *   responseFormat.image.imageSize = "1K"
-     *     1024-on-the-long-edge for 1:1 → 1024×1024. Plenty for an
-     *     avatar that ships into a ≤112px CSS slot; "2K"/"4K" would
-     *     just inflate bandwidth + latency for no visible gain.
+     *     `1K` = 1024-on-the-long-edge → for 1:1, 1024×1024. Plenty
+     *     for an avatar that ships into a ≤112px CSS slot; "2K"/
+     *     "4K" would just inflate bandwidth + latency.
      *
      *   safetySettings: BLOCK_NONE on all four categories
      *     Per handoff doc §7, Gemini's defaults reject some Hebrew
@@ -127,11 +127,9 @@ export class GeminiPortraitService {
       contents: [{ parts: [{ text: prompt }] }],
       generationConfig: {
         responseModalities: ['IMAGE'],
-        responseFormat: {
-          image: {
-            aspectRatio: '1:1',
-            imageSize: '1K',
-          },
+        imageConfig: {
+          aspectRatio: '1:1',
+          imageSize: '1K',
         },
       },
       safetySettings: [
