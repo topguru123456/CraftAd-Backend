@@ -7,21 +7,28 @@ import { AvatarDetails } from './openai-avatar.service';
  * realistic portrait photo from the persona JSON produced by
  * OpenAiAvatarService.
  *
- * Uses the same Gemini image surface as AiImageService for
- * consistency — `gemini-2.5-flash-image` via the public
- * generativelanguage endpoint (the handoff doc references the
- * Vertex-AI `gemini-3-pro-image-preview`, but the rest of the
- * backend talks to the public Gemini endpoint and that's the model
- * the existing image-gen path is calibrated against; staying on the
- * same surface saves a parallel auth setup and keeps prompt tuning
- * one place).
+ * Model: `gemini-3-pro-image-preview` via the public
+ * generativelanguage endpoint. We previously ran on
+ * `gemini-2.5-flash-image` for consistency with the campaign-creative
+ * image path, but 2.5-flash-image was returning `finishReason:
+ * NO_IMAGE` at an unacceptable rate for photorealistic portraits.
+ * The 3-pro variant is the Pro tier of the Gemini-3 image family
+ * (slower + more expensive per call but markedly better at
+ * portrait fidelity and noticeably less likely to soft-decline on
+ * person-rendering prompts). Auth + request shape are unchanged
+ * from 2.5-flash; only the model ID in the URL flipped.
+ *
+ * Note: the `-preview` suffix is intentional — that's the current
+ * documented identifier on ai.google.dev as of June 2026. If/when
+ * Google drops the suffix at GA, update both this constant and the
+ * doc comment.
  *
  * Returns the public Supabase URL — the FE never sees the
  * generation response. */
 
 const GEMINI_URL =
   'https://generativelanguage.googleapis.com/v1beta/models/' +
-  'gemini-2.5-flash-image:generateContent';
+  'gemini-3-pro-image-preview:generateContent';
 const BUCKET = 'avatar-portraits';
 
 const PORTRAIT_INSTRUCTION = `Create a realistic portrait photo of the brand avatar described below. The image should look like an authentic high-quality photograph, not an illustration or cartoon.
