@@ -37,7 +37,7 @@ export interface GeneratedImage {
 
 interface GeminiPart {
   text?: string;
-  inline_data?: { mime_type?: string; data?: string };
+  inline_data?: { mime_type: string; data: string };
   inlineData?: { mimeType?: string; data?: string };
 }
 
@@ -72,20 +72,33 @@ export class AiImageService {
   ): Promise<GeneratedImage> {
     const apiKey = this.config.require('GEMINI_API_KEY');
 
-    const geminiBody = {
-      contents: [
-        {
-          parts: [
-            { text: `${ART_DIRECTOR_PREAMBLE}${dto.prompt.trim()}` },
-            {
-              inline_data: {
-                mime_type: dto.referenceMime,
-                data: dto.referenceImageBase64,
-              },
-            },
-          ],
+    const hasReference = Boolean(
+      dto.referenceImageBase64 && dto.referenceMime,
+    );
+
+    const parts: GeminiPart[] = [
+      { text: `${ART_DIRECTOR_PREAMBLE}${dto.prompt.trim()}` },
+    ];
+    if (hasReference) {
+      parts.push({
+        inline_data: {
+          mime_type: dto.referenceMime as string,
+          data: dto.referenceImageBase64 as string,
         },
-      ],
+      });
+    }
+
+    /* responseModalities=['IMAGE'] is required for the text-only path:
+     * without a reference image to implicitly anchor image output,
+     * Gemini defaults to TEXT and returns commentary instead of bytes.
+     * With a reference the modality is already image-biased but
+     * declaring it explicitly costs nothing and removes the implicit
+     * dependency on input shape. */
+    const geminiBody = {
+      contents: [{ parts }],
+      generationConfig: {
+        responseModalities: ['IMAGE'],
+      },
     };
 
     let response: Response;
