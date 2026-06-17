@@ -23,7 +23,10 @@ import type { CreativeGeneration } from '@prisma/client';
 import { CurrentUser } from '../../auth/decorators/current-user.decorator';
 import { AuthenticatedUser } from '../../auth/types/authenticated-user.type';
 import { DispatchEditDto } from '../dto/dispatch-edit.dto';
-import { DispatchGenerationDto } from '../dto/dispatch-generation.dto';
+import {
+  DISPATCH_DEFAULT_COUNT,
+  DispatchGenerationDto,
+} from '../dto/dispatch-generation.dto';
 import { ToggleBookmarkDto } from '../dto/toggle-bookmark.dto';
 import { ClearEditService } from '../services/clear-edit.service';
 import { CommitEditService } from '../services/commit-edit.service';
@@ -50,21 +53,29 @@ export class CreativeGenerationsController {
   @Post('generations/dispatch')
   @HttpCode(HttpStatus.ACCEPTED)
   @ApiOperation({
-    summary: 'Kick off a single variant generation via the GCF dispatcher',
+    summary: 'Kick off a batch of variant generations via the GCF dispatcher',
+    description:
+      'Dispatches `count` variants in one call (default 1). The server picks ' +
+      'N distinct ad-reference templates for the `example` slot when the user ' +
+      "didn't supply their own — per-variant requests couldn't coordinate that " +
+      'distinct-pick. Returns the uids that were accepted plus any per-variant ' +
+      'errors so the caller can surface partial-failure UX.',
   })
   @ApiAcceptedResponse({
-    description: 'Variant row created and accepted by the dispatcher.',
+    description:
+      'Batch accepted. `uids` carries the successfully-dispatched variant ' +
+      'ids; `errors` lists per-variant failure messages (empty on full success).',
   })
   async dispatch(
     @Body() dto: DispatchGenerationDto,
     @CurrentUser() user: AuthenticatedUser,
-  ): Promise<{ uid: string; projectId: string; status: string }> {
-    const row = await this.dispatcher.dispatch(
+  ): Promise<{ uids: string[]; errors: string[] }> {
+    return this.dispatcher.dispatchBatch(
       user.id,
       user.email ?? '',
       dto.projectId,
+      dto.count ?? DISPATCH_DEFAULT_COUNT,
     );
-    return { uid: row.id, projectId: row.projectId, status: row.status };
   }
 
   @Post('generations/:id/edit')

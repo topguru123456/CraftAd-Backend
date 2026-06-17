@@ -19,7 +19,8 @@
     "db:migrate:dev": "prisma migrate dev",
     "db:migrate:deploy": "prisma migrate deploy",
     "db:studio": "prisma studio",
-    "db:migrate:reset": "prisma migrate reset"
+    "db:migrate:reset": "prisma migrate reset",
+    "seed:creative-templates": "tsx scripts/seed-creative-templates.ts"
   },
   "dependencies": {
     "@imgly/background-removal-node": "^1.4.5",
@@ -49,6 +50,7 @@
     "ts-loader": "^9.5.0",
     "ts-node": "^10.9.2",
     "tsconfig-paths": "^4.2.0",
+    "tsx": "^4.22.4",
     "typescript": "^5.7.0"
   }
 }

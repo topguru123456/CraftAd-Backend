@@ -15,6 +15,7 @@ import { AppConfigService } from '../../../config/config.service';
 import { PrismaService } from '../../../common/prisma/prisma.service';
 import { resolveCampaignGcfImageSlots } from '../lib/resolve-campaign-gcf-images';
 import { ensureHttps } from '../lib/gcf-url';
+import { pickRandomExamples } from '../lib/creative-templates';
 import { failGenerationRow } from '../../../common/generation-errors/fail-generation-row';
 import { formatGenerationFailureLog } from '../../../common/generation-errors/generation-error.util';
 import { PromptAssemblerService } from './prompt-assembler.service';
@@ -57,6 +58,11 @@ interface ResolvedInputs {
   gcfImages: ReturnType<typeof resolveCampaignGcfImageSlots>;
 }
 
+export interface DispatchBatchResult {
+  uids: string[];
+  errors: string[];
+}
+
 @Injectable()
 export class DispatchService {
   private readonly logger = new Logger(DispatchService.name);
@@ -68,11 +74,36 @@ export class DispatchService {
     private readonly gcfImages: GcfImagePrepService,
   ) {}
 
-  async dispatch(
+  /* Dispatches `count` variants for a project in one batch.
+   *
+   * Why batch (vs the old per-variant endpoint):
+   *   The GCF `example` image slot is the ad-poster reference. When
+   *   the user supplied their own reference ad, every variant in the
+   *   batch shares it. When they didn't, we pick N DISTINCT samples
+   *   from the seeded `creative-templates` pool so each variant
+   *   anchors against a different reference. Per-variant requests
+   *   couldn't coordinate the distinct-pick property without an
+   *   external lock; batching makes it a local in-memory decision.
+   *
+   * Project / brand / prompt are resolved ONCE up front (they're
+   * identical across the batch); only the per-variant pieces
+   * (creativeGeneration row + example slot) vary inside dispatchOne.
+   *
+   * Partial-failure semantics:
+   *   - Top-level throws (NotFound, BadRequest from resolveInputs)
+   *     mean no variant can succeed — the whole batch is rejected.
+   *   - Per-variant failures inside `dispatchOne` (GCF non-OK, image
+   *     prep crash, etc.) surface in `errors` and the batch returns
+   *     200 with whatever variants did get a uid. The FE shows the
+   *     partial uids and surfaces the errors. */
+  async dispatchBatch(
     userId: string,
     userEmail: string,
     projectId: string,
-  ): Promise<Pick<CreativeGeneration, 'id' | 'projectId' | 'status'>> {
+    count: number,
+  ): Promise<DispatchBatchResult> {
+    if (count <= 0) return { uids: [], errors: [] };
+
     const apiSecret = this.config.require('API_SECRET');
     const webhookSecret = this.config.require('WEBHOOK_SECRET');
     const dispatcherUrl = this.config.require('GENERATE_DISPATCHER_URL');
@@ -105,6 +136,89 @@ export class DispatchService {
       aspectRatio: inputs.aspectRatio,
     });
 
+    const exampleSlots = this.resolveExampleSlotsForBatch(inputs, count);
+    const webhookUrl = this.buildWebhookUrl(webhookSecret);
+
+    const settled = await Promise.allSettled(
+      Array.from({ length: count }, (_, i) =>
+        this.dispatchOne({
+          userId,
+          userEmail,
+          projectId,
+          inputs,
+          exampleSlot: exampleSlots[i],
+          prompt,
+          webhookUrl,
+          dispatcherUrl,
+          apiSecret,
+        }),
+      ),
+    );
+
+    const uids: string[] = [];
+    const errors: string[] = [];
+    for (const result of settled) {
+      if (result.status === 'fulfilled') {
+        uids.push(result.value.id);
+      } else {
+        const msg =
+          result.reason instanceof Error
+            ? result.reason.message
+            : String(result.reason);
+        errors.push(msg);
+      }
+    }
+
+    return { uids, errors };
+  }
+
+  /* Decides the `example` GCF slot per variant in a batch.
+   *
+   *   user-reference mode → all variants share the user's reference.
+   *   fallback mode       → pick N distinct templates from the seeded
+   *                         pool. If the pool is empty or smaller than
+   *                         `count`, fill the shortfall with the
+   *                         resolver's default (the logo-duplicate
+   *                         fallback). The shortfall path only fires
+   *                         when the manifest is missing/under-sized;
+   *                         normal operation never reaches it. */
+  private resolveExampleSlotsForBatch(
+    inputs: ResolvedInputs,
+    count: number,
+  ): string[] {
+    if (inputs.gcfImages.referenceMode === 'user') {
+      return Array.from({ length: count }, () => inputs.gcfImages.example);
+    }
+
+    const picks = pickRandomExamples(count);
+    if (picks.length === count) return picks;
+
+    return Array.from({ length: count }, (_, i) => picks[i] ?? inputs.gcfImages.example);
+  }
+
+  private async dispatchOne(args: {
+    userId: string;
+    userEmail: string;
+    projectId: string;
+    inputs: ResolvedInputs;
+    exampleSlot: string;
+    prompt: string;
+    webhookUrl: string;
+    dispatcherUrl: string;
+    apiSecret: string;
+  }): Promise<Pick<CreativeGeneration, 'id' | 'projectId' | 'status'>> {
+    const {
+      userId,
+      userEmail,
+      projectId,
+      inputs,
+      exampleSlot,
+      prompt,
+      webhookUrl,
+      dispatcherUrl,
+      apiSecret,
+    } = args;
+
     const row = await this.prisma.creativeGeneration.create({
       data: {
         projectId,
@@ -119,14 +233,14 @@ export class DispatchService {
       const preparedImages = await this.gcfImages.prepareSlots(userId, {
         logo: inputs.gcfImages.logo,
         product: inputs.gcfImages.product,
-        example: inputs.gcfImages.example,
+        example: exampleSlot,
         font: inputs.gcfImages.font,
       });
 
       const payload: DispatcherPayload = {
         uid: row.id,
         user_email: userEmail,
-        webhook_url: this.buildWebhookUrl(webhookSecret),
+        webhook_url: webhookUrl,
         prompt,
         aspect_ratio: inputs.aspectRatio,
         images: preparedImages,
@@ -163,7 +277,7 @@ export class DispatchService {
        * build, or anything that throws before postToDispatcher even
        * returns. The dispatcher never saw the request in those cases,
        * so its internal retry can't recover us. Mark failed + rethrow
-       * so the FE shows the actual error. */
+       * so the batch records this variant as failed. */
       const raw = err instanceof Error ? err.message : String(err);
       await failGenerationRow(this.prisma, row.id, raw, (line) =>
         this.logger.error(line),
@@ -216,12 +330,6 @@ export class DispatchService {
     }
     if (gcfImages.example === gcfImages.product) {
       throw new BadRequestException('תמונת הייחוס לא יכולה להיות זהה לתמונת המוצר');
-    }
-
-    if (gcfImages.referenceMode === 'fallback') {
-      this.logger.debug(
-        `project ${project.id}: no optional reference ad — pipeline example slot uses logo duplicate`,
-      );
     }
 
     return {
