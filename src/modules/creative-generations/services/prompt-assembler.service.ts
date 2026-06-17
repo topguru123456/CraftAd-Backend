@@ -87,7 +87,12 @@ export class PromptAssemblerService {
     const colorsValue = secondary
       ? `${brand.primaryColor}, ${secondary}`
       : brand.primaryColor;
-    push('Brand Colors', colorsValue);
+    /* Anchor the label so the model treats brand colors as a palette
+     * SOURCE for the example's accent positions, not as a dominant
+     * directive that recolors the whole frame. The REFERENCE FIDELITY
+     * block establishes the same rule; this label echoes it where
+     * the colors actually live. */
+    push('Brand Colors (apply at the example\'s accent positions only)', colorsValue);
     push('The Ads are for', project.platform);
     push('Landing page link', project.landingPageUrl);
     return lines.join('\n');
@@ -112,75 +117,186 @@ const INPUT_IMAGES_USER = `INPUT IMAGES — read this BEFORE anything else:
 You receive four images attached. Their roles are FIXED. Do not
 swap, recombine, or reinterpret them:
 
-  1. LOGO — the brand mark / wordmark. Place it visibly in the final
-     composition exactly as supplied. Never replace it with a
-     generated logo.
+  1. LOGO — the brand mark / wordmark. MUST appear visibly in the
+     final composition, used AS-IS (never redrawn or substituted).
+     Its absence is a failure mode — reroll rather than ship without it.
 
   2. PRODUCT — the subject of THIS ad. The hero of the final frame
      must be the subject shown in this image. If it's a physical
-     product (bottle, can, phone, etc.), feature THAT object. If it
-     shows a person or scene, feature THAT subject. The EXAMPLE AD
-     below does NOT override what the product is.
+     product, feature THAT object; if it's a person or scene,
+     feature THAT subject. The EXAMPLE AD does NOT override what
+     the product is.
 
   3. EXAMPLE AD — a style reference. Mimic its composition density,
      color temperament, type weight, decorative motifs, and lighting
      feel. DO NOT use the example's subject as your subject; DO NOT
      copy its product. Style and layout reference only.
 
-  4. FONT REFERENCE — a typography sample. Use similar font weight /
-     style for headlines and CTAs.
+  4. FONT REFERENCE — defines the TYPEFACE FAMILY for all Hebrew
+     text in the output. Mirror the letterforms in this sample. Do
+     not substitute a different font family. The font reference
+     dictates WHICH typeface; the EXAMPLE AD dictates how it is
+     used (weight, size, treatment).
 
 Failure modes to avoid:
   - Treating the EXAMPLE AD's subject as the product.
   - Treating the PRODUCT image as a style reference.
-  - Inventing a product that doesn't appear in either attachment.`;
+  - Inventing a product that doesn't appear in either attachment.
+  - Substituting the font-reference typeface with a different
+    Hebrew font.`;
 
 const INPUT_IMAGES_FALLBACK = `INPUT IMAGES — read this BEFORE anything else:
 You receive four images attached. Their roles are FIXED:
 
-  1. LOGO — the brand mark / wordmark. Place it visibly in the final
-     composition exactly as supplied.
+  1. LOGO — the brand mark / wordmark. MUST appear visibly, used
+     AS-IS. Its absence is a failure mode — reroll rather than ship.
 
   2. PRODUCT — the subject of THIS ad. The hero of the final frame
      must be the subject shown in this image.
 
-  3. EXAMPLE — pipeline placeholder, IGNORE. This slot is a duplicate
-     of the logo and carries no styling intent. Do not mimic it.
+  3. EXAMPLE — pipeline placeholder, IGNORE. Do not mimic it.
 
-  4. FONT REFERENCE — a typography sample. Use similar font weight /
-     style for headlines and CTAs.`;
+  4. FONT REFERENCE — defines the TYPEFACE FAMILY for all Hebrew
+     text. Mirror the letterforms; do not substitute a different
+     Hebrew font.`;
 
 function inputImagesBlock(referenceMode: CampaignReferenceMode): string {
   return referenceMode === 'user' ? INPUT_IMAGES_USER : INPUT_IMAGES_FALLBACK;
 }
 
-const BEHAVIOR_BLOCK = `BEHAVIOR:
-Act like a Creative Director in a top-tier agency. Prioritize clarity,
-aesthetics, and marketing intent. Make decisive layout calls; never
-ask clarifying questions. If something is ambiguous, infer from the
-brand and product brief and proceed.`;
-
-const DESIGN_PRINCIPLES_BLOCK = `DESIGN PRINCIPLES (non-negotiable):
-- Clean & minimalist composition.
-- Product is the hero of the frame.
-- The brand logo (attached as the \`logo\` image) MUST appear visibly
-  in the final composition. Treat its absence as a failure mode —
-  reroll the composition rather than ship without it.
+/* LEGIBILITY FLOOR — subordinate to REFERENCE FIDELITY.
+ *
+ * Previously this block was "DESIGN PRINCIPLES" and prescribed clean/
+ * minimalist composition, studio-quality lighting, brand-palette
+ * dominance, text < 30%. Those rules conflicted with example-mimicry
+ * — the model averaged the two and produced a uniform clean-minimal-
+ * brand-pink output regardless of which reference was attached. Now
+ * stripped to legibility constraints only; everything stylistic is
+ * the example's job. */
+const LEGIBILITY_FLOOR_BLOCK = `LEGIBILITY FLOOR (apply ON TOP of the example-derived style, do NOT override it):
 - Headline ≤ 8 words.
 - Sub-text ≤ 1.5 sentences. No paragraphs.
-- Text covers less than 30% of the image area.
-- Brand-consistent palette (use the colors provided above).
-- Studio-quality lighting; scroll-stopping vibe.
-- No AI hand/finger/shape distortions. Re-roll the composition rather
-  than ship a broken element.`;
+- No AI hand/finger/shape distortions. Re-roll rather than ship a
+  broken element.`;
 
-const REFERENCE_FIDELITY_USER = `REFERENCE FIDELITY (highest priority):
-The Example Ad image attached is a strict visual blueprint, not a
-suggestion. Mimic its overall "vibe" — composition density, color
-temperament, type weight, decorative motifs, lighting feel — even
-when the product itself differs. Treat deviations as a failure mode
-and re-roll the composition rather than ship a version that drifts
-from the reference's visual register.`;
+const REFERENCE_FIDELITY_USER = `REFERENCE FIDELITY (HIGHEST PRIORITY — overrides every default below):
+
+The four input images carry TWO different jobs. Treat them separately:
+  - LOGO + PRODUCT → IDENTITY ONLY. They define WHAT the brand is and
+    WHAT the product looks like. Use them for those properties only —
+    not for layout, color temperament, lighting, or mood.
+  - EXAMPLE AD → STYLE. This is the dominant source of every visual
+    decision listed below. The example IS the brief.
+
+Observe the EXAMPLE AD and reproduce in your output:
+
+  Layout (THE MOST IMPORTANT CATEGORY — the model defaults to logo
+  top-right and text in a right column for Hebrew ads. The example's
+  actual layout MUST override that default.)
+    - Which zone of the canvas holds the headline? Valid positions
+      include: top band spanning the full width, bottom band, top-
+      left, top-right, centered, left column, right column, text
+      overlaying the product, diagonal across the canvas, wrapping
+      around the product. Pick the one the example uses, then mirror
+      it for RTL reading order.
+    - Which zone holds the CTA? (under the headline, separated bottom
+      band, inline next to the headline, floating over the product,
+      no CTA at all, etc.)
+    - Where does the product/subject sit on the canvas? (centered,
+      filling one half, bleeding off an edge, a small inset, occupying
+      the whole frame as a background)
+    - How much negative space surrounds each element? (breathable
+      vs dense)
+
+  Palette & lighting
+    - What is the example's DOMINANT background tone? (light, dark,
+      photographic, gradient, solid color, textured)
+    - How many distinct colors does the example use? (monochrome,
+      2-tone, 3-tone, full-color photographic)
+    - WHERE do accent colors appear? (CTA fill, headline emphasis,
+      object highlights, badge)
+    - Replace the example's accent colors with the brand colors at
+      THE SAME POSITIONS. Do NOT force the brand palette to dominate
+      the whole frame — if the example is dark with one accent, the
+      output stays dark with the brand color as that accent.
+    - Match the example's lighting register (soft/diffuse vs
+      hard/dramatic vs flat vs gradient).
+
+  Typography (proportions only — the actual TYPEFACE FAMILY comes
+  from the FONT REFERENCE image, never substituted)
+    - Headline weight within the font family (light, regular, bold,
+      heavy, condensed). Observe the example.
+    - Headline size relative to canvas (small caption / medium /
+      huge display). Observe the example.
+    - Sub-text presence (none, single line, short paragraph).
+      Observe the example.
+    - Text alignment INSIDE the block (centered, flush right).
+      Observe the example.
+
+  CTA button
+    - Shape (pill, rounded rect, sharp rect, plain text link).
+    - Fill style (solid, outline, gradient, transparent).
+    - Icon (none, arrow, plus, custom glyph).
+    - Size relative to canvas.
+
+  Mood / treatment
+    - Surface treatment (clean studio, lifestyle scene, textured,
+      collage, illustration).
+    - Energy (calm, urgent, premium, playful, utilitarian).
+
+PRECEDENCE: if any default in this prompt conflicts with what the
+example shows, the EXAMPLE wins. Treat drift from the example as a
+failure mode and re-roll.`;
+
+/* Recognition hooks, not prescriptions: list named structural patterns
+ * the reference ad might belong to so the model has vocabulary other
+ * than "single-concept hero + text + CTA". Without this block the
+ * model collapses every reference into that default shape, which is
+ * the strongest mechanical cause of "every output looks similar".
+ *
+ * The rule "pick ONE archetype, observe it from the reference, do not
+ * blend" is the load-bearing line — without it the model averages
+ * archetypes together and lands back at the single-concept default. */
+const LAYOUT_ARCHETYPES_USER = `LAYOUT ARCHETYPES — identify which one the reference belongs to:
+The reference ad fits ONE of these structural patterns. Identify
+which, then re-compose in that same pattern, adapted to the target
+aspect ratio and the new brand inputs.
+
+  1. SINGLE-CONCEPT — one focal subject (product or person) + one
+     text column + one CTA. Hero and copy occupy distinct zones;
+     whitespace separates them.
+
+  2. COMPARISON — two parallel halves (before/after, with/without,
+     A vs B). Each side carries its own subject and a brief label;
+     the split is visually emphasised (gutter, line, contrasting
+     backgrounds).
+
+  3. CENTERED / SYMMETRIC — hero subject sits on the vertical axis
+     with concentric layers around it (badges, ribbons, callouts,
+     headline above, CTA below). Strong centerline.
+
+  4. SOCIAL PROOF / FLOATING CARDS — testimonials, ratings, or small
+     floating panels overlaying or beside the hero. Multiple small
+     text blocks rather than one consolidated column.
+
+  5. GRID / BOTTOM STRIP — multi-cell grid of related shots, or a
+     dominant hero with a strip of secondary tiles along one edge.
+     Used for product ranges or category sweepers.
+
+Rules:
+  - Pick ONE archetype. Do not blend two.
+  - The archetype is OBSERVED from the reference, not chosen
+    independently. If the reference is a comparison ad, do not
+    output a single-concept ad just because the brand happens to
+    have a single product.
+  - Re-compose for the target canvas. If the reference is 1:1 and
+    the target is 9:16, the archetype stays the same but the layout
+    fills the new aspect natively (vertical stacking for 9:16,
+    side-by-side for 16:9).
+  - Text-block placement mirrors the reference's placement: centered
+    stays centered; left-side text in an LTR reference becomes
+    right-side text in the RTL mirror; corners flip to the mirrored
+    corner. The text flow INSIDE any block is always right-to-left.`;
 
 const REFERENCE_FIDELITY_FALLBACK = `REFERENCE LAYOUT:
 No user-selected reference ad was provided. Compose an original ad
@@ -188,97 +304,111 @@ layout from the brief, brand rules, and RTL defaults. The attached
 \`example\` image is only a pipeline placeholder — do NOT treat it as
 a layout blueprint or copy its composition.`;
 
-const HEBREW_RTL_BLOCK = `HEBREW + RTL (strict):
+/* Hebrew TEXT rules only — applied to the text content itself, not to
+ * canvas position. Block placement / which zone of the canvas holds
+ * the text is decided entirely by the example (see REFERENCE_FIDELITY
+ * + LAYOUT_ARCHETYPES). Previously this block said "headlines and
+ * CTAs sit on the right by default" which the model treated as a hard
+ * directive — every output ended up logo-top-right + text-right-column
+ * regardless of what the reference ad actually showed. */
+const HEBREW_RTL_BLOCK = `HEBREW LANGUAGE RULES (governs the text content, NOT canvas position):
 - All copy is fully in Hebrew.
-- All text is right-aligned. Headlines and CTAs sit on the right by
-  default unless the reference layout dictates otherwise.
+- Text reads right-to-left and is right-aligned WITHIN whatever
+  container it sits in. (Internal text flow only — this does NOT
+  determine where the text block sits on the canvas; block position
+  comes from the example.)
 - Numeric runs keep natural left-to-right order inside the RTL
   context (e.g. "250,000 ₪", not "₪ 000,250").
 - Never mirror or flip Hebrew letters.
 - Apply standard Hebrew punctuation rules (commas / periods on the
   visual left of the line, not the right).`;
 
-const MASTER_RULE_WITH_REFERENCE = `MASTER RULE — LAYOUT vs FLOW:
-The PLACEMENT of the text block follows the reference ad:
-- reference text centered → output text centered
-- reference text in a left block → output text in a right block (the
-  RTL mirror)
-- reference text in a corner → output text in the mirrored corner.
-The INTERNAL FLOW inside the block is always right-to-left,
-regardless of where the block sits on the canvas.`;
-
-const MASTER_RULE_WITHOUT_REFERENCE = `MASTER RULE — LAYOUT vs FLOW:
-Place the text block using strong RTL marketing layout (headline and
-CTA weighted to the right, clear hierarchy). The INTERNAL FLOW inside
-the block is always right-to-left.`;
-
 const CTA_WITH_REFERENCE = `CTA BUTTON LOGIC:
-Default: no icon inside the CTA button.
-If the reference ad has an arrow inside its CTA:
-- Include an arrow.
-- The arrow MUST point left (RTL forward direction).
-- Use a premium/bespoke arrow glyph (not generic clip-art).
-- Use generous internal padding around the button copy + arrow.`;
+Mirror the example's CTA exactly — presence, shape, fill, padding,
+and any icon. If the example has no CTA button, your output has no
+CTA button. If the example has a plain text link, your output has a
+plain text link. If the example has an icon (arrow, chevron, plus,
+custom glyph), include that same icon style.
+
+Single override for RTL: if the example's icon is directional
+(arrow, chevron, hand pointing), flip it to point LEFT — RTL forward
+direction. Non-directional icons (plus, dot, etc.) are not flipped.`;
 
 const CTA_WITHOUT_REFERENCE = `CTA BUTTON LOGIC:
 Default: no icon inside the CTA button unless the brief implies one.
 If you include an arrow, it MUST point left (RTL forward direction).`;
 
-const FINAL_WITH_REFERENCE = `FINAL INSTRUCTIONS:
-You receive four attached images: logo, product, example, and font.
+const FINAL_WITH_REFERENCE = `LOGO PLACEMENT (read carefully — there is a strong failure mode here):
 
-LOGO PLACEMENT (REQUIRED — non-negotiable):
-The attached \`logo\` image MUST appear in the final composition.
-- If the reference layout has an obvious logo position, place the
-  brand logo there.
-- Otherwise place the logo in the top-left or top-right at roughly
-  8–12% of canvas width.
-- Use the logo image AS-IS. Do not redraw or invent a substitute.
+The model's default for Hebrew ads is to place the brand mark in the
+top-right corner. This default is WRONG unless the example actually
+uses a top-right brand mark.
 
-Other rules:
-- Treat the product image as the hero subject.
-- Mimic the example ad's layout, vibe, and typography placement.
-- Mimic the typography in the font image (weight, letterforms,
-  spacing). Do not substitute a different typeface.
+Read the example image and identify where its brand mark sits.
+Possible positions include any of:
+  - inline alongside the headline (the most common position in
+    modern editorial ads)
+  - centered above the headline
+  - centered below the CTA
+  - integrated into a footer band that spans the full width
+  - inside a corner badge (any of the four corners)
+  - bleeding off an edge as a partial wordmark
+  - on the product itself (sticker / label / overlay)
+  - omitted from the visible frame entirely (very rare; only if the
+    reference clearly has no logo)
 
-Generate a single finished ad creative that respects every block above.`;
+Place your brand logo in the SAME position the example places its
+brand mark, and at roughly the SAME scale relative to the canvas.
+If the example does NOT use a top corner, your output MUST NOT use
+a top corner. If your draft has the logo top-right and the example
+does not, that is a failure — re-roll.
 
-const FINAL_WITHOUT_REFERENCE = `FINAL INSTRUCTIONS:
-You receive four attached images: logo, product, example, and font.
+Use the logo image AS-IS. Do not redraw or substitute.
 
-LOGO PLACEMENT (REQUIRED — non-negotiable):
-The attached \`logo\` image MUST appear in the final composition.
+Generate a single finished ad creative.`;
+
+const FINAL_WITHOUT_REFERENCE = `LOGO PLACEMENT:
 - Place the logo in the top-left or top-right at roughly 8–12% of
   canvas width unless the composition clearly demands elsewhere.
-- Use the logo image AS-IS. Do not redraw or invent a substitute.
 
-Other rules:
-- Treat the product image as the hero subject.
-- Do NOT mimic the example image — it is not a reference ad.
-- Use the font image for typography weight and letterform cues only.
+Generate a single finished ad creative.`;
 
-Generate a single finished ad creative that respects every block above.`;
-
+/* Block order (user-reference mode):
+ *   REFERENCE_FIDELITY  — concrete observation checklist of the
+ *                         example image; the dominant style source
+ *   LAYOUT_ARCHETYPES   — structural-pattern recognition + the
+ *                         text-placement-mirrors-reference rule
+ *   HEBREW_RTL          — Hebrew typography + RTL text rules
+ *   CTA                 — CTA / arrow conventions
+ *   LEGIBILITY_FLOOR    — subordinate floor (headline word count,
+ *                         no AI distortions). Explicit "do NOT
+ *                         override the example" in its own header.
+ *   FINAL               — logo placement (the only thing not
+ *                         covered in INPUT_IMAGES or above).
+ *
+ * The fidelity block sits BEFORE the floor because earlier blocks
+ * carry more weight in the model. Previously we had DESIGN_PRINCIPLES
+ * (clean/minimal/brand-pink) leading the static section — that
+ * homogenised every output regardless of which reference attached.
+ * The BEHAVIOR block ("act like a creative director, be decisive")
+ * was also removed: Gemini 3 Pro is already a decisive executor. */
 function staticBlocksWithReference(): string[] {
   return [
-    BEHAVIOR_BLOCK,
-    DESIGN_PRINCIPLES_BLOCK,
     REFERENCE_FIDELITY_USER,
+    LAYOUT_ARCHETYPES_USER,
     HEBREW_RTL_BLOCK,
-    MASTER_RULE_WITH_REFERENCE,
     CTA_WITH_REFERENCE,
+    LEGIBILITY_FLOOR_BLOCK,
     FINAL_WITH_REFERENCE,
   ];
 }
 
 function staticBlocksWithoutReference(): string[] {
   return [
-    BEHAVIOR_BLOCK,
-    DESIGN_PRINCIPLES_BLOCK,
     REFERENCE_FIDELITY_FALLBACK,
     HEBREW_RTL_BLOCK,
-    MASTER_RULE_WITHOUT_REFERENCE,
     CTA_WITHOUT_REFERENCE,
+    LEGIBILITY_FLOOR_BLOCK,
     FINAL_WITHOUT_REFERENCE,
   ];
 }
@@ -304,14 +434,8 @@ function aspectRatioBlock(aspectRatio: string): string {
     `${aspectRatio}. Compose for that exact canvas shape.`;
   return `OUTPUT ASPECT RATIO (strictest constraint — overrides reference shape):
 Target canvas: ${framing}
-
-Hard rules:
-- The composition MUST fill the entire ${aspectRatio} canvas edge-to-edge.
-- Do NOT produce a square or differently-shaped image padded with black,
-  white, or any colored bars. No letterboxing, no pillarboxing.
-- Do NOT preserve the canvas shape of the reference image — if the
-  reference is square or 16:9 and the target is ${aspectRatio}, RE-compose
-  the layout natively for ${aspectRatio}.
-- Treat any letterbox / pillarbox result as a failure mode and re-roll
-  the composition rather than ship it.`;
+The composition MUST fill the entire ${aspectRatio} canvas edge-to-edge —
+no letterboxing, no pillarboxing, no padding bars. If the reference image
+has a different shape, RE-compose the layout natively for ${aspectRatio}
+rather than preserve the reference's canvas.`;
 }
