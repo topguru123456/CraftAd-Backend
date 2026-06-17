@@ -41,6 +41,7 @@ export class CommitEditService {
         id: true,
         imageUrl: true,
         cleanImageUrl: true,
+        thumbnailUrl: true,
         editStatus: true,
         editImageUrl: true,
         editCleanImageUrl: true,
@@ -59,6 +60,15 @@ export class CommitEditService {
       ? this.storage.extractPath(row.imageUrl, CREATIVES_BUCKET)
       : null;
     const oldCleanPath = row.cleanImageUrl ?? null; // already a path, not a URL
+    /* Thumbnail of the OLD main image — now stale. Tracked so we can
+     * delete the orphan after the commit lands. The new image's
+     * thumbnail isn't regenerated here (would add ~2-5s to the commit
+     * RTT for a fetch + sharp + upload); the row's thumbnailUrl is
+     * nulled and the FE falls back to imageUrl for that one variant
+     * until the next webhook-driven thumbnail lands. */
+    const oldThumbnailPath = row.thumbnailUrl
+      ? this.storage.extractPath(row.thumbnailUrl, CREATIVES_BUCKET)
+      : null;
 
     const newImageUrl = row.editImageUrl;
     // Legacy fallback: rows that pre-date the editCleanImageUrl column
@@ -75,6 +85,11 @@ export class CommitEditService {
       data: {
         imageUrl: newImageUrl,
         cleanImageUrl: newCleanImageUrl,
+        /* Null the stale thumbnail — its bytes correspond to the
+         * pre-edit image. FE falls back to imageUrl for this variant
+         * until/unless a future change regenerates the thumbnail on
+         * commit. */
+        thumbnailUrl: null,
         editStatus: null,
         editImageUrl: null,
         editCleanImageUrl: null,
@@ -103,6 +118,13 @@ export class CommitEditService {
         await this.storage.remove(CREATIVES_CLEAN_BUCKET, [oldCleanPath]);
       } catch (err) {
         this.logger.warn(`Old clean file cleanup failed: ${err}`);
+      }
+    }
+    if (oldThumbnailPath) {
+      try {
+        await this.storage.remove(CREATIVES_BUCKET, [oldThumbnailPath]);
+      } catch (err) {
+        this.logger.warn(`Old thumbnail file cleanup failed: ${err}`);
       }
     }
 

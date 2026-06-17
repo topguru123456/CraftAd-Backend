@@ -137,6 +137,16 @@ export class DispatchService {
     });
 
     const exampleSlots = this.resolveExampleSlotsForBatch(inputs, count);
+    /* Observability for the fallback template pool: log which mode
+     * was used and (in fallback mode) which template URLs the batch
+     * is anchoring against. Lets us confirm the seeded pool is being
+     * hit and spot duplicates if the picker ever regresses. */
+    this.logger.log(
+      `project ${projectId}: dispatching ${count} variants, exampleMode=${inputs.gcfImages.referenceMode}` +
+        (inputs.gcfImages.referenceMode === 'fallback'
+          ? ` templates=${JSON.stringify(exampleSlots)}`
+          : ''),
+    );
     const webhookUrl = this.buildWebhookUrl(webhookSecret);
 
     const settled = await Promise.allSettled(

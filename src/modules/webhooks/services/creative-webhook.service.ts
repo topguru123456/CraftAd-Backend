@@ -1,11 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { GenerationStatus } from '@prisma/client';
+import sharp from 'sharp';
 import { PrismaService } from '../../../common/prisma/prisma.service';
 import { SupabaseStorageService } from '../../../common/storage/supabase-storage.service';
 import { ScoringService } from '../../scoring/services/scoring.service';
 import { WatermarkService } from '../../watermark/services/watermark.service';
 import {
   formatGenerationFailureLog,
+  isRetryableRateLimitError,
   mapGenerationErrorForUser,
 } from '../../../common/generation-errors/generation-error.util';
 import { validateImageRatio } from '../../../common/aspect-ratio/aspect-ratio.util';
@@ -13,6 +15,19 @@ import { CreativeWebhookDto } from '../dto/creative-webhook.dto';
 
 const CREATIVES_BUCKET = 'creatives';
 const CREATIVES_CLEAN_BUCKET = 'creatives-clean';
+
+/* Thumbnail spec for the project-detail grid.
+ *
+ *   width 800   covers 2x DPI for the typical 400-500px-wide card
+ *   quality 80  sweet-spot for JPEG marketing imagery
+ *   mozjpeg     ~10-15% smaller files at the same quality
+ *
+ * A typical Imagen output (~500KB-2MB PNG) shrinks to ~40-80KB JPEG,
+ * which is the whole point of the column. The watermark is baked
+ * into the source bytes before this runs, so the thumbnail carries
+ * the watermark too — no leak path through the thumbnail URL. */
+const THUMBNAIL_WIDTH = 800;
+const THUMBNAIL_QUALITY = 80;
 
 // Outcome envelope returned to GCF. Always 200 OK with a `reason` so
 // Cloud Tasks doesn't retry idempotent / unrecoverable cases.
@@ -73,8 +88,22 @@ export class CreativeWebhookService {
     }
 
     if (body.status === 'error') {
-      // Retries are owned by the GCF dispatcher — we don't redispatch here.
       const raw = body.message ?? 'Generation failed';
+      /* Rate-limit / 429 / RESOURCE_EXHAUSTED errors are treated as
+       * transient and never surface a toast — per product decision,
+       * the user shouldn't see "AI is overloaded" pop-ups every time
+       * Gemini back-pressures. The row stays in `dispatched` and the
+       * GenerationReaperService marks it failed after 1h with a
+       * generic timeout message if no success webhook ever lands.
+       * All other error shapes (safety blocks, invalid arguments,
+       * "no image" refusals) still mark failed immediately so the
+       * user sees the actionable Hebrew message and can adjust. */
+      if (isRetryableRateLimitError(raw)) {
+        this.logger.warn(
+          `rate-limit webhook for ${row.id} (keeping in dispatched, reaper will age out): ${raw}`,
+        );
+        return { ok: true, reason: 'rate_limit_transient' };
+      }
       await this.markFailed(row.id, raw);
       return { ok: true, reason: 'worker_error' };
     }
@@ -120,8 +149,10 @@ export class CreativeWebhookService {
     // works, no security drop, just no visual watermark until the asset
     // appears at backend/assets/watermark.png).
     const filename = `${row.userId}/${row.id}.png`;
+    const thumbnailFilename = `${row.userId}/${row.id}-thumb.jpg`;
     let publicUrl: string;
     let cleanPath: string;
+    let watermarkedBytes: Uint8Array;
     try {
       const cleanUpload = await this.storage.uploadPrivate(
         CREATIVES_CLEAN_BUCKET,
@@ -131,7 +162,7 @@ export class CreativeWebhookService {
       );
       cleanPath = cleanUpload.path;
 
-      const watermarkedBytes = await this.watermark.apply(bytes);
+      watermarkedBytes = await this.watermark.apply(bytes);
       const publicUpload = await this.storage.upload(
         CREATIVES_BUCKET,
         filename,
@@ -144,6 +175,16 @@ export class CreativeWebhookService {
       await this.markFailed(row.id, `Storage upload failed: ${message}`);
       return { ok: true, reason: 'upload_failed' };
     }
+
+    /* Thumbnail upload. Isolated in its own try so a sharp/upload
+     * hiccup doesn't fail an otherwise-successful row — the row just
+     * lands with thumbnailUrl=null and the FE falls back to imageUrl
+     * (degrades to today's behaviour, no user-visible failure). */
+    const thumbnailUrl = await this.buildAndUploadThumbnail(
+      watermarkedBytes,
+      thumbnailFilename,
+      row.id,
+    );
 
     // Atomic flip — guards against concurrent retries downgrading a
     // row that's already terminal. imageUrl is the public watermarked
@@ -161,6 +202,7 @@ export class CreativeWebhookService {
         status: GenerationStatus.ready,
         imageUrl: publicUrl,
         cleanImageUrl: cleanPath,
+        thumbnailUrl,
         errorMessage: null,
       },
     });
@@ -192,6 +234,35 @@ export class CreativeWebhookService {
     });
 
     return { ok: true };
+  }
+
+  /* Builds + uploads the project-detail-grid thumbnail. Returns the
+   * public URL on success or null on any failure — the caller writes
+   * null into thumbnailUrl in the null case, and the FE falls back to
+   * the full imageUrl. */
+  private async buildAndUploadThumbnail(
+    watermarkedBytes: Uint8Array,
+    path: string,
+    uid: string,
+  ): Promise<string | null> {
+    try {
+      const thumbBuffer = await sharp(watermarkedBytes)
+        .resize({ width: THUMBNAIL_WIDTH, withoutEnlargement: true })
+        .jpeg({ quality: THUMBNAIL_QUALITY, mozjpeg: true })
+        .toBuffer();
+      const uploaded = await this.storage.upload(
+        CREATIVES_BUCKET,
+        path,
+        new Uint8Array(thumbBuffer),
+        'image/jpeg',
+      );
+      return uploaded.publicUrl;
+    } catch (err) {
+      this.logger.warn(
+        `Thumbnail build/upload failed for ${uid}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
+    }
   }
 
   // Accepts both bare base64 and the `data:image/...;base64,` prefixed form.

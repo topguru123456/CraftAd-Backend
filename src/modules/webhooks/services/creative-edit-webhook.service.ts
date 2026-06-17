@@ -5,6 +5,7 @@ import { SupabaseStorageService } from '../../../common/storage/supabase-storage
 import { WatermarkService } from '../../watermark/services/watermark.service';
 import {
   formatGenerationFailureLog,
+  isRetryableRateLimitError,
   mapGenerationErrorForUser,
 } from '../../../common/generation-errors/generation-error.util';
 import { CreativeEditWebhookDto } from '../dto/creative-edit-webhook.dto';
@@ -54,6 +55,17 @@ export class CreativeEditWebhookService {
         typeof body.message === 'string' && body.message.trim()
           ? body.message.trim()
           : 'Edit failed';
+      /* Same trust-and-defer model as the main webhook: rate-limit /
+       * 429 errors stay in `dispatched`, no toast surfaces, the
+       * reaper marks them failed after 1h. Actionable errors
+       * (safety / invalid arg / "no image") still fail immediately
+       * so the user sees the specific message. */
+      if (isRetryableRateLimitError(raw)) {
+        this.logger.warn(
+          `rate-limit edit webhook for ${row.id} (keeping in dispatched, reaper will age out): ${raw}`,
+        );
+        return { ok: true, reason: 'rate_limit_transient' };
+      }
       await this.markFailed(row.id, raw);
       return { ok: true, reason: 'worker_error' };
     }
