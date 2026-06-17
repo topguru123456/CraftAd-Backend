@@ -1,5 +1,4 @@
 import {
-  BadGatewayException,
   BadRequestException,
   Injectable,
   Logger,
@@ -17,10 +16,7 @@ import { PrismaService } from '../../../common/prisma/prisma.service';
 import { resolveCampaignGcfImageSlots } from '../lib/resolve-campaign-gcf-images';
 import { ensureHttps } from '../lib/gcf-url';
 import { failGenerationRow } from '../../../common/generation-errors/fail-generation-row';
-import {
-  formatGenerationFailureLog,
-  mapGenerationErrorForUser,
-} from '../../../common/generation-errors/generation-error.util';
+import { formatGenerationFailureLog } from '../../../common/generation-errors/generation-error.util';
 import { PromptAssemblerService } from './prompt-assembler.service';
 
 const RATIO_MAP: Record<string, string> = {
@@ -138,25 +134,23 @@ export class DispatchService {
 
       const result = await this.postToDispatcher(dispatcherUrl, apiSecret, payload);
 
+      /* Non-OK initial response: the GCF dispatcher retries internally
+       * (5xx / network / timeout / queue back-pressure) and we own the
+       * webhook that settles the row to ready / failed. Marking the
+       * row failed here would surface a premature toast for a request
+       * the dispatcher is still working on; instead we leave it in
+       * `dispatched` and trust the eventual webhook. The reaper
+       * (GenerationReaperService) ages out rows that never settle, so
+       * a truly stuck dispatch can't loading-spinner forever. */
       if (!result.ok) {
-        const raw = result.error;
-        const errorMessage = mapGenerationErrorForUser(raw).slice(0, 1000);
-        this.logger.error(
+        this.logger.warn(
           formatGenerationFailureLog({
             uid: row.id,
             kind: 'generate',
-            raw: `${raw} | images=${JSON.stringify(preparedImages)}`,
-            userMessage: errorMessage,
+            raw: `dispatcher initial non-ok (relying on internal retry): ${result.error}`,
+            userMessage: '(no user message — row stays dispatched)',
           }),
         );
-        await this.prisma.creativeGeneration.update({
-          where: { id: row.id },
-          data: {
-            status: GenerationStatus.failed,
-            errorMessage,
-          },
-        });
-        throw new BadGatewayException('הקריאייטיב לא יצא לדרך — נסו שוב.');
       }
 
       return this.prisma.creativeGeneration.update({
@@ -165,12 +159,15 @@ export class DispatchService {
         select: { id: true, projectId: true, status: true },
       });
     } catch (err) {
-      if (!(err instanceof BadGatewayException)) {
-        const raw = err instanceof Error ? err.message : String(err);
-        await failGenerationRow(this.prisma, row.id, raw, (line) =>
-          this.logger.error(line),
-        );
-      }
+      /* Caught here only for OUR-side failures — image prep, payload
+       * build, or anything that throws before postToDispatcher even
+       * returns. The dispatcher never saw the request in those cases,
+       * so its internal retry can't recover us. Mark failed + rethrow
+       * so the FE shows the actual error. */
+      const raw = err instanceof Error ? err.message : String(err);
+      await failGenerationRow(this.prisma, row.id, raw, (line) =>
+        this.logger.error(line),
+      );
       throw err;
     }
   }

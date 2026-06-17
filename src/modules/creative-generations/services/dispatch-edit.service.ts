@@ -1,5 +1,4 @@
 import {
-  BadGatewayException,
   BadRequestException,
   Injectable,
   Logger,
@@ -136,15 +135,15 @@ export class DispatchEditService {
     };
 
     const result = await this.postToDispatcher(dispatcherUrl, apiSecret, payload);
+
+    /* See DispatchService for the rationale: GCF retries internally,
+     * the webhook owns terminal state, and the reaper covers stuck
+     * rows. Marking failed on the initial non-OK would prematurely
+     * stop a row the dispatcher is still working on. */
     if (!result.ok) {
-      await this.prisma.creativeGeneration.update({
-        where: { id: variantId },
-        data: {
-          editStatus: EditStatus.failed,
-          editErrorMessage: result.error.slice(0, 1000),
-        },
-      });
-      throw new BadGatewayException('העריכה לא יצאה לדרך — נסו שוב.');
+      this.logger.warn(
+        `edit dispatcher initial non-ok for ${variantId} (relying on internal retry): ${result.error}`,
+      );
     }
 
     return { uid: variantId, status: 'dispatched' };

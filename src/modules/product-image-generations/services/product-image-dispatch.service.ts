@@ -15,10 +15,7 @@ import { GcfImagePrepService } from '../../../common/gcf/gcf-image-prep.service'
 import { AppConfigService } from '../../../config/config.service';
 import { PrismaService } from '../../../common/prisma/prisma.service';
 import { failGenerationRow } from '../../../common/generation-errors/fail-generation-row';
-import {
-  formatGenerationFailureLog,
-  mapGenerationErrorForUser,
-} from '../../../common/generation-errors/generation-error.util';
+import { formatGenerationFailureLog } from '../../../common/generation-errors/generation-error.util';
 import { ProductImagePromptService } from './product-image-prompt.service';
 
 /** Wizard ratio → GCF aspect_ratio. `portrait` maps to '3:4' — the
@@ -175,25 +172,19 @@ export class ProductImageDispatchService {
 
       const result = await this.postToDispatcher(dispatcherUrl, apiSecret, payload);
 
+      /* Non-OK initial response: GCF retries internally and the webhook
+       * owns terminal state — same trust model as creative-generations'
+       * DispatchService. The reaper (GenerationReaperService) ages out
+       * rows that never settle, so we don't loading-spinner forever. */
       if (!result.ok) {
-        const raw = result.error;
-        const errorMessage = mapGenerationErrorForUser(raw).slice(0, 1000);
-        this.logger.error(
+        this.logger.warn(
           formatGenerationFailureLog({
             uid: row.id,
             kind: 'generate',
-            raw,
-            userMessage: errorMessage,
+            raw: `product-images dispatcher initial non-ok (relying on internal retry): ${result.error}`,
+            userMessage: '(no user message — row stays dispatched)',
           }),
         );
-        await this.prisma.creativeGeneration.update({
-          where: { id: row.id },
-          data: {
-            status: GenerationStatus.failed,
-            errorMessage,
-          },
-        });
-        return { id: row.id, projectId: row.projectId, status: GenerationStatus.failed };
       }
 
       return this.prisma.creativeGeneration.update({

@@ -1,7 +1,9 @@
 import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
+import { ScheduleModule } from '@nestjs/schedule';
 import { ConfigModule } from './config/config.module';
 import { PrismaModule } from './common/prisma/prisma.module';
 import { GcfImagePrepModule } from './common/gcf/gcf-image-prep.module';
+import { ReaperModule } from './common/reaper/reaper.module';
 import { SupabaseStorageModule } from './common/storage/supabase-storage.module';
 import { RequestLoggerMiddleware } from './common/logger/request-logger.middleware';
 import { AuthModule } from './modules/auth/auth.module';
@@ -27,6 +29,7 @@ import { WebhooksModule } from './modules/webhooks/webhooks.module';
 @Module({
   imports: [
     ConfigModule,
+    ScheduleModule.forRoot(),
     PrismaModule,
     SupabaseStorageModule,
     GcfImagePrepModule,
@@ -46,6 +49,7 @@ import { WebhooksModule } from './modules/webhooks/webhooks.module';
     WebhooksModule,
     DownloadsModule,
     ImagesModule,
+    ReaperModule,
   ],
 })
 export class AppModule implements NestModule {
