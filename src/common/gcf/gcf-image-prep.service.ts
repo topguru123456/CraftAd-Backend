@@ -35,7 +35,14 @@ export class GcfImagePrepService {
     private readonly storage: SupabaseStorageService,
   ) {}
 
-  /** Ensure every GCF slot is a fetchable raster on our Supabase CDN. */
+  /** Ensure every GCF slot is a fetchable raster on our Supabase CDN.
+   *
+   * The `product` slot is uniquely allowed to be empty: when the user
+   * didn't upload a product image, the GCF dispatcher itself auto-
+   * generates one server-side, so we pass `""` through and let the
+   * dispatcher handle it. All other slots (logo, example, font) are
+   * still required — those are always known up-front (brand asset,
+   * template-pool fallback, config). */
   async prepareSlots(
     userId: string,
     slots: Record<GcfImageSlot, string>,
@@ -51,14 +58,37 @@ export class GcfImagePrepService {
     for (const slot of Object.keys(slots) as GcfImageSlot[]) {
       const url = slots[slot];
       if (!url?.trim()) {
+        if (slot === 'product') {
+          out[slot] = '';
+          continue;
+        }
         throw new BadRequestException(`חסרה תמונה: ${SLOT_LABEL_HE[slot]}`);
       }
-      out[slot] = await this.prepareOne(url, {
-        userId,
-        bucket: bucketBySlot[slot],
-        prefix: slot,
-        labelHe: SLOT_LABEL_HE[slot],
-      });
+      try {
+        out[slot] = await this.prepareOne(url, {
+          userId,
+          bucket: bucketBySlot[slot],
+          prefix: slot,
+          labelHe: SLOT_LABEL_HE[slot],
+        });
+      } catch (err) {
+        /* The `example` slot is a STYLE anchor pulled from a 369-entry
+         * random pool — a flaky AVIF URL or a transient Supabase timeout
+         * shouldn't kill the variant. Degrade to the prepared logo
+         * (pre-pool fallback behavior) instead of rethrowing. Other
+         * slots stay required. The iteration order in the calling
+         * payload is logo → product → example → font, so out.logo is
+         * already populated when we hit this branch. */
+        if (slot === 'example') {
+          const detail = err instanceof Error ? err.message : String(err);
+          this.logger.warn(
+            `example slot prep failed, falling back to logo: ${detail}`,
+          );
+          out[slot] = out.logo;
+          continue;
+        }
+        throw err;
+      }
     }
     return out;
   }

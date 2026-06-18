@@ -332,13 +332,16 @@ export class DispatchService {
       fontReferenceUrl,
     });
 
-    if (!gcfImages.product) {
-      throw new BadRequestException('לפרויקט חסרה תמונת מוצר');
-    }
+    /* `product` may be empty here — the GCF dispatcher auto-generates a
+     * product image server-side when this slot is `""`. Logo / example
+     * are still required (brand asset + template-pool fallback). The
+     * example !== product check is a safety net against a legacy code
+     * path that duplicated the logo into both slots; it still works
+     * when product is empty (empty !== logo). */
     if (!gcfImages.example) {
       throw new BadRequestException('למותג חסר לוגו — לא ניתן להפעיל יצירה');
     }
-    if (gcfImages.example === gcfImages.product) {
+    if (gcfImages.product && gcfImages.example === gcfImages.product) {
       throw new BadRequestException('תמונת הייחוס לא יכולה להיות זהה לתמונת המוצר');
     }
 
