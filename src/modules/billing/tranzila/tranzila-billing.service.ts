@@ -366,12 +366,24 @@ export class TranzilaBillingService {
   /* User clicks Cancel in-app. Sets cancel_at_period_end=true on
    * user_metadata; access continues until the existing period_end. The
    * renewal runner sees the flag on the next sweep after period_end
-   * and finalizes via clearTranzilaSubscription. Idempotent. */
+   * and finalizes via clearTranzilaSubscription. Idempotent — a second
+   * call replaces the previously-captured reason/note.
+   *
+   * The reason + note are written alongside the cancel flag so future
+   * retention logic (discounts, pause-instead-of-cancel) can route on
+   * `cancellation_reason`. For now they're capture-only; nothing in
+   * the runner branches on them yet. */
   async cancelSubscription(input: {
     userId: string;
     userMetadata: Record<string, unknown>;
+    reason: string;
+    note: string | null;
   }): Promise<{ ok: true; periodEndUnix: number | null }> {
-    await this.syncService.setTranzilaCancelAtPeriodEnd({ userId: input.userId });
+    await this.syncService.setTranzilaCancelAtPeriodEnd({
+      userId: input.userId,
+      reason: input.reason,
+      note: input.note,
+    });
     const periodEnd = input.userMetadata.subscription_current_period_end;
     const periodEndUnix =
       typeof periodEnd === 'number' && Number.isFinite(periodEnd) ? periodEnd : null;

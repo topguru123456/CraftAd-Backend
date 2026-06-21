@@ -24,6 +24,7 @@ import { AppConfigService } from '../../../config/config.service';
 import { CurrentUser } from '../../auth/decorators/current-user.decorator';
 import { Public } from '../../auth/decorators/public.decorator';
 import { AuthenticatedUser } from '../../auth/types/authenticated-user.type';
+import { CancelSubscriptionDto } from '../dto/cancel-subscription.dto';
 import type { InvoiceListItemDto } from '../dto/invoice-list-item.dto';
 import {
   CORRELATION_PREFIX,
@@ -190,22 +191,27 @@ export class TranzilaBillingController {
   @ApiBearerAuth('supabase-jwt')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: 'Cancel — grace until current period end',
+    summary: 'Cancel — grace until current period end (captures reason)',
     description:
-      'Sets cancel_at_period_end=true on user_metadata. The user retains access ' +
-      'until subscription_current_period_end. The renewal runner then sweeps and ' +
-      'finalizes the cancellation (subscription_status="canceled", plan keys cleared). ' +
-      'Idempotent — calling twice is a no-op.',
+      'Sets cancel_at_period_end=true on user_metadata and persists the ' +
+      'cancellation reason + optional note for analytics + future retention ' +
+      'routing. The user retains access until subscription_current_period_end; ' +
+      'the renewal runner sweeps and finalizes (subscription_status="canceled", ' +
+      'plan keys cleared) at the end of the grace period. Idempotent — a second ' +
+      'call overwrites the previously-captured reason.',
   })
   @ApiOkResponse({
     description: 'ok=true plus the period_end timestamp the FE should show the user.',
   })
   async cancel(
     @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: CancelSubscriptionDto,
   ): Promise<{ ok: true; periodEndUnix: number | null }> {
     return this.tranzila.cancelSubscription({
       userId: user.id,
       userMetadata: user.metadata ?? {},
+      reason: dto.reason,
+      note: dto.note?.trim() || null,
     });
   }
 

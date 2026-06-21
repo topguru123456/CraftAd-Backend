@@ -214,27 +214,48 @@ export class SubscriptionSyncService {
       subscription_id: null,
       subscription_current_period_end: null,
       cancel_at_period_end: false,
+      /* Reason+note are kept for historical analytics; only the
+       * "in-flight cancel" flags get cleared. If you ever want to
+       * scrub PII from canceled accounts, null these here too. */
     });
     this.logger.log(`tranzila subscription cleared: user=${input.userId}`);
   }
 
   /* User clicked Cancel in-app. Sets the grace flag; access continues
    * until the existing period_end, at which point the renewal runner
-   * sweeps and clearTranzilaSubscription() finalizes. Idempotent — calling
-   * twice writes the same value. */
-  async setTranzilaCancelAtPeriodEnd(input: { userId: string }): Promise<void> {
+   * sweeps and clearTranzilaSubscription() finalizes. Idempotent —
+   * calling twice writes the same flag and replaces the previously-
+   * captured reason/note.
+   *
+   * The reason + note land in user_metadata so they survive renewal
+   * sweeps + plan changes. Cleared by clearTranzilaSubscription if /
+   * when the cancellation finalizes (renewal runner sweep). */
+  async setTranzilaCancelAtPeriodEnd(input: {
+    userId: string;
+    reason: string;
+    note: string | null;
+  }): Promise<void> {
     await this.patchUserMetadata(input.userId, {
       cancel_at_period_end: true,
+      cancellation_reason: input.reason,
+      cancellation_note: input.note,
+      cancellation_recorded_at: Math.floor(Date.now() / 1000),
     });
-    this.logger.log(`tranzila cancel-at-period-end set: user=${input.userId}`);
+    this.logger.log(
+      `tranzila cancel-at-period-end set: user=${input.userId} reason=${input.reason}`,
+    );
   }
 
-  /* User changed their mind during the grace window — clear the flag.
-   * The renewal runner will charge them as normal on the next sweep.
-   * Idempotent — calling on a non-canceled user writes the same false. */
+  /* User changed their mind during the grace window — clear the flag
+   * plus the captured reason (the cancel intent is gone, so the
+   * routing data is no longer relevant). The renewal runner will
+   * charge them as normal on the next sweep. Idempotent. */
   async resumeTranzilaSubscription(input: { userId: string }): Promise<void> {
     await this.patchUserMetadata(input.userId, {
       cancel_at_period_end: false,
+      cancellation_reason: null,
+      cancellation_note: null,
+      cancellation_recorded_at: null,
     });
     this.logger.log(`tranzila resume: user=${input.userId}`);
   }
