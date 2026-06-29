@@ -99,6 +99,22 @@ async function bootstrap(): Promise<void> {
   const logger = new Logger('Bootstrap');
   logger.log(`Craftad API listening on http://localhost:${port}`);
   logger.log(`Swagger UI at  http://localhost:${port}/api/docs`);
+
+  /* Loud warnings for dangerous-in-prod flags so a misconfigured
+   * deploy is impossible to miss in the boot log. */
+  if (config.get('BILLING_TEST_MODE') === true) {
+    logger.warn(
+      '⚠ BILLING_TEST_MODE is ON — every plan renewal will charge ₪1 ' +
+        'regardless of real plan price. THIS MUST BE OFF IN PRODUCTION.',
+    );
+  }
+  if (config.get('TRANZILA_BYPASS_ENABLED') === true) {
+    logger.warn(
+      '⚠ TRANZILA_BYPASS_ENABLED is ON — /billing/tranzila/bypass-trial ' +
+        'is reachable and bypasses real card verification. ' +
+        'THIS MUST BE OFF IN PRODUCTION.',
+    );
+  }
 }
 
 bootstrap().catch((err) => {

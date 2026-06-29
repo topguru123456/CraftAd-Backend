@@ -50,9 +50,25 @@ export function isBillingCycle(value: unknown): value is BillingCycle {
   return typeof value === 'string' && (VALID_CYCLES as readonly string[]).includes(value);
 }
 
+/* The ₪1 charge amount used in test mode. Tranzila's trial J5 verify
+ * is already ₪1 by convention; reusing that value for test-mode
+ * renewals keeps every charge under the J5 hold limit (so real cards
+ * won't be settled even on accident). */
+export const BILLING_TEST_AMOUNT = 1;
+
 /* Lookup helper. Throws on unknown plan/cycle so a misconfigured user
- * surfaces at the call site rather than silently charging ₪0 or NaN. */
-export function getPlanAmount(planId: PlanId, cycle: BillingCycle): BillingPlanAmount {
+ * surfaces at the call site rather than silently charging ₪0 or NaN.
+ *
+ * When `testMode=true`, every plan/cycle pair resolves to a ₪1 charge
+ * (period_days is preserved so renewal timing is unaffected — i.e.,
+ * a monthly subscriber still renews every 30 days, just for ₪1).
+ * Drives the BILLING_TEST_MODE end-to-end test path documented in
+ * `env.schema.ts`. */
+export function getPlanAmount(
+  planId: PlanId,
+  cycle: BillingCycle,
+  testMode = false,
+): BillingPlanAmount {
   const plan = BILLING_PLAN_AMOUNTS[planId];
   if (!plan) {
     throw new Error(`Unknown planId for billing: ${planId}`);
@@ -60,6 +76,9 @@ export function getPlanAmount(planId: PlanId, cycle: BillingCycle): BillingPlanA
   const entry = plan[cycle];
   if (!entry) {
     throw new Error(`Unknown cycle for plan ${planId}: ${cycle}`);
+  }
+  if (testMode) {
+    return { amount: BILLING_TEST_AMOUNT, periodDays: entry.periodDays };
   }
   return entry;
 }

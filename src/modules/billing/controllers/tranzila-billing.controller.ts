@@ -24,6 +24,7 @@ import { AppConfigService } from '../../../config/config.service';
 import { CurrentUser } from '../../auth/decorators/current-user.decorator';
 import { Public } from '../../auth/decorators/public.decorator';
 import { AuthenticatedUser } from '../../auth/types/authenticated-user.type';
+import { ApplyRetentionDiscountDto } from '../dto/apply-retention-discount.dto';
 import { CancelSubscriptionDto } from '../dto/cancel-subscription.dto';
 import type { InvoiceListItemDto } from '../dto/invoice-list-item.dto';
 import {
@@ -212,6 +213,42 @@ export class TranzilaBillingController {
       userMetadata: user.metadata ?? {},
       reason: dto.reason,
       note: dto.note?.trim() || null,
+    });
+  }
+
+  @Post('apply-retention-discount')
+  @ApiBearerAuth('supabase-jwt')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Apply the one-time 50% retention discount to the next renewal',
+    description:
+      "Step 2 of the cancel flow. When the user accepts the discount offer, " +
+      'this writes the discount fields on user_metadata + clears any pending ' +
+      'cancel state (semantically "accept discount" means "stay subscribed"). ' +
+      'One-per-user lifetime — returns 400 if `retention_discount_used` is ' +
+      'already true. The renewal runner consumes the discount on the next ' +
+      'sweep after period_end.',
+  })
+  @ApiOkResponse({
+    description:
+      'ok=true plus the discountPct (always 50), renewalsAffected (always 1), ' +
+      "and the existing period_end so the FE can show the user the date the " +
+      'discounted charge will land.',
+  })
+  async applyRetentionDiscount(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: ApplyRetentionDiscountDto,
+  ): Promise<{
+    ok: true;
+    discountPct: number;
+    renewalsAffected: number;
+    periodEndUnix: number | null;
+  }> {
+    return this.tranzila.applyRetentionDiscount({
+      userId: user.id,
+      userMetadata: user.metadata ?? {},
+      acceptanceReason: dto.reason ?? 'unspecified',
+      acceptanceNote: dto.note?.trim() || null,
     });
   }
 

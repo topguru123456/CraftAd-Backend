@@ -139,6 +139,26 @@ export const envSchema = z.object({
     (v) => (v === 'true' || v === '1' ? true : v === 'false' || v === '0' || v === undefined || v === '' ? false : v),
     z.boolean().default(false),
   ),
+
+  // ── PAYMENT TEST MODE — REMOVE BEFORE PROD ───────────────────────
+  //
+  // BILLING_TEST_MODE   When true, EVERY plan-renewal charge is sent
+  //                     to Tranzila as ₪1 regardless of the actual
+  //                     plan price. Used for verifying the full
+  //                     payment pipeline (signup → trial → renewal →
+  //                     plan switch → cancel) with real Tranzila
+  //                     transactions but at a token cost. Trial J5
+  //                     verify is ALREADY ₪1 by Tranzila convention,
+  //                     so it's unaffected. Pair with frontend env
+  //                     VITE_BILLING_TEST_MODE to show ₪1 prices in
+  //                     the FE + a TEST MODE banner.
+  //
+  // Production deploys MUST set this to false. The boot logger emits
+  // a WARN line when it's on so a misconfigured deploy is loud.
+  BILLING_TEST_MODE: z.preprocess(
+    (v) => (v === 'true' || v === '1' ? true : v === 'false' || v === '0' || v === undefined || v === '' ? false : v),
+    z.boolean().default(false),
+  ),
 });
 
 export type Env = z.infer<typeof envSchema>;

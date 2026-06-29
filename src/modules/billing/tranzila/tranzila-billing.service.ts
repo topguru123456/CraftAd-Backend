@@ -1,4 +1,9 @@
-import { ForbiddenException, Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  Logger,
+} from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { BillingPaymentAttemptKind } from '@prisma/client';
 import { AppConfigService } from '../../../config/config.service';
@@ -361,6 +366,67 @@ export class TranzilaBillingService {
         `plan=${claimedPlanId ?? entry.planId}/${claimedCycle ?? entry.cycle}`,
     );
     return { ok: true };
+  }
+
+  /* Retention discount — fixed at 50% off the next renewal charge
+   * per current product spec. Once per user lifetime; the FE skips
+   * the offer step when `retention_discount_used` is already true,
+   * and this service double-checks server-side so an API client
+   * can't bypass the lock. */
+  private static readonly RETENTION_DISCOUNT_PCT = 50;
+  private static readonly RETENTION_RENEWALS_AFFECTED = 1;
+
+  /* User accepted the discount offer in the cancel flow.
+   *
+   * Eligibility:
+   *   - User must currently have a subscription (any active-ish
+   *     status). Cancelling-finalized users can't redeem.
+   *   - `retention_discount_used` must not already be true.
+   *
+   * On accept we write the discount fields the renewal runner reads
+   * + clear any pending cancel state (semantically "accept discount"
+   * means "stay subscribed"). Returns the discount pct + period_end
+   * so the FE can compose the success toast / detail row. */
+  async applyRetentionDiscount(input: {
+    userId: string;
+    userMetadata: Record<string, unknown>;
+    acceptanceReason: string;
+    acceptanceNote: string | null;
+  }): Promise<{
+    ok: true;
+    discountPct: number;
+    renewalsAffected: number;
+    periodEndUnix: number | null;
+  }> {
+    if (input.userMetadata.retention_discount_used === true) {
+      throw new BadRequestException(
+        'הצעת ההנחה כבר נוצלה לחשבון זה',
+      );
+    }
+
+    const status = input.userMetadata.subscription_status;
+    if (status !== 'active' && status !== 'trialing' && status !== 'past_due') {
+      throw new BadRequestException('אין מנוי פעיל לקבלת הנחה');
+    }
+
+    await this.syncService.applyRetentionDiscount({
+      userId: input.userId,
+      discountPct: TranzilaBillingService.RETENTION_DISCOUNT_PCT,
+      renewalsAffected: TranzilaBillingService.RETENTION_RENEWALS_AFFECTED,
+      acceptanceReason: input.acceptanceReason,
+      acceptanceNote: input.acceptanceNote,
+    });
+
+    const periodEnd = input.userMetadata.subscription_current_period_end;
+    const periodEndUnix =
+      typeof periodEnd === 'number' && Number.isFinite(periodEnd) ? periodEnd : null;
+
+    return {
+      ok: true,
+      discountPct: TranzilaBillingService.RETENTION_DISCOUNT_PCT,
+      renewalsAffected: TranzilaBillingService.RETENTION_RENEWALS_AFFECTED,
+      periodEndUnix,
+    };
   }
 
   /* User clicks Cancel in-app. Sets cancel_at_period_end=true on

@@ -260,6 +260,64 @@ export class SubscriptionSyncService {
     this.logger.log(`tranzila resume: user=${input.userId}`);
   }
 
+  /* User accepted the retention discount during the cancel flow.
+   *
+   * Writes the discount fields the renewal runner reads on the next
+   * sweep + clears any pending cancel state (semantically "accept
+   * discount" means "stay subscribed"). The `retention_discount_used`
+   * lock is permanent — once true, the FE offer step skips itself so
+   * the user can't re-redeem by clicking cancel again. The cancel
+   * reason captured in step 1 of the flow moves into a parallel
+   * `retention_discount_acceptance_reason` field for "almost-canceled
+   * because X but stayed" analytics. */
+  async applyRetentionDiscount(input: {
+    userId: string;
+    discountPct: number;
+    renewalsAffected: number;
+    acceptanceReason: string;
+    acceptanceNote: string | null;
+  }): Promise<void> {
+    await this.patchUserMetadata(input.userId, {
+      retention_discount_pct: input.discountPct,
+      retention_discount_renewals_remaining: input.renewalsAffected,
+      retention_discount_applied_at: Math.floor(Date.now() / 1000),
+      retention_discount_used: true,
+      retention_discount_acceptance_reason: input.acceptanceReason,
+      retention_discount_acceptance_note: input.acceptanceNote,
+      cancel_at_period_end: false,
+      cancellation_reason: null,
+      cancellation_note: null,
+      cancellation_recorded_at: null,
+    });
+    this.logger.log(
+      `retention discount applied: user=${input.userId} pct=${input.discountPct} renewals=${input.renewalsAffected}`,
+    );
+  }
+
+  /* Renewal runner consumed a discounted charge — decrement the
+   * remaining-renewals counter; clear the pct + remaining fields when
+   * the counter hits zero so subsequent renewals charge full price.
+   * `retention_discount_used` stays true forever (the one-per-user
+   * lock). Idempotent. */
+  async consumeRetentionDiscount(input: {
+    userId: string;
+    nextRemaining: number;
+  }): Promise<void> {
+    if (input.nextRemaining <= 0) {
+      await this.patchUserMetadata(input.userId, {
+        retention_discount_pct: null,
+        retention_discount_renewals_remaining: null,
+      });
+    } else {
+      await this.patchUserMetadata(input.userId, {
+        retention_discount_renewals_remaining: input.nextRemaining,
+      });
+    }
+    this.logger.log(
+      `retention discount consumed: user=${input.userId} remaining=${input.nextRemaining}`,
+    );
+  }
+
   /* --- DEV BYPASS — REMOVE BEFORE PROD -------------------------------
    *
    * Marks the user as if a real Tranzila trial tokenize had completed.

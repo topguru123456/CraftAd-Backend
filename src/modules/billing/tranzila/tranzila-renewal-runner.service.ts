@@ -171,9 +171,37 @@ export class TranzilaRenewalRunner {
     const cycle: BillingCycle = cycleRaw;
     const planId: PlanId = normalizePlanId(planIdRaw);
 
-    const { amount, periodDays } = getPlanAmount(planId, cycle);
+    /* Test mode: env-flag override that pulls every plan's renewal
+     * charge to ₪1 (see BILLING_TEST_MODE in env.schema.ts). Lets us
+     * exercise the full payment pipeline with real Tranzila
+     * transactions at a token cost. Period_days stays normal so
+     * renewal timing isn't compressed. */
+    const testMode = this.config.get('BILLING_TEST_MODE') === true;
+    const { amount: fullAmount, periodDays } = getPlanAmount(planId, cycle, testMode);
     const periodEndDate = new Date(periodEndUnix * 1000);
     const idempotencyKey = `${userId}:renewal:${periodEndDate.toISOString()}`;
+
+    /* Retention-discount window: when retention_discount_pct + remaining
+     * are both > 0, this renewal is the one the user accepted the
+     * offer for. Charge the discounted amount; on success the runner
+     * decrements `renewals_remaining` (clears the pct when it hits 0)
+     * via syncService.consumeRetentionDiscount.
+     *
+     * Math.floor for half-shekel cases (e.g. ₪229 / 2 = ₪114.5 → ₪114)
+     * — user benefits from rounding down, matches the FE display math.
+     * Math.max(1, ...) enforces a ₪1 floor so the discount can't
+     * collapse a test-mode ₪1 charge to ₪0 (which Tranzila rejects). */
+    const discountPct = readNumber(metadata.retention_discount_pct);
+    const discountRemaining = readNumber(metadata.retention_discount_renewals_remaining);
+    const discountActive =
+      typeof discountPct === 'number' &&
+      discountPct > 0 &&
+      discountPct < 100 &&
+      typeof discountRemaining === 'number' &&
+      discountRemaining > 0;
+    const chargeAmount = discountActive
+      ? Math.max(1, Math.floor((fullAmount * (100 - discountPct)) / 100))
+      : fullAmount;
 
     /* Pre-insert audit row to claim the idempotency slot. A racing
      * runner doing the same (user, period) collides on idempotency_key
@@ -184,7 +212,7 @@ export class TranzilaRenewalRunner {
         data: {
           userId,
           kind: BillingPaymentAttemptKind.renewal,
-          amount: amount * 100, // major → agorot
+          amount: chargeAmount * 100, // major → agorot
           currency: 'ILS',
           periodEnd: periodEndDate,
           idempotencyKey,
@@ -215,7 +243,7 @@ export class TranzilaRenewalRunner {
         supplier,
         pw,
         token,
-        sum: amount,
+        sum: chargeAmount,
         currency: 1,
         expdate,
         tranmode: 'A',
@@ -263,9 +291,16 @@ export class TranzilaRenewalRunner {
         lastIndex: charge.index ?? null,
         lastConfirmationCode: charge.confirmationCode ?? null,
       });
+      if (discountActive) {
+        await this.syncService.consumeRetentionDiscount({
+          userId,
+          nextRemaining: (discountRemaining ?? 0) - 1,
+        });
+      }
       this.logger.log(
         `renewal success user=${userId} plan=${planId}/${cycle} ` +
-          `amount=₪${amount} index=${charge.index ?? '-'} ` +
+          `amount=₪${chargeAmount}${discountActive ? ` (after ${discountPct}% retention discount)` : ''} ` +
+          `index=${charge.index ?? '-'} ` +
           `new_period_end=${new Date(newPeriodEnd * 1000).toISOString()}`,
       );
       return 'success';
