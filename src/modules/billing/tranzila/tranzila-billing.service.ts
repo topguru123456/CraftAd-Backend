@@ -54,6 +54,8 @@ interface InitIframeSessionInput {
   planId: 'starter' | 'scale' | 'pro';
   cycle: 'monthly' | 'yearly';
   kind: IframeKind;
+  /** Browser origin (e.g. https://localhost:3000). Used for return redirect so postMessage matches. */
+  frontendOrigin?: string;
 }
 
 export interface IframeSessionResponse {
@@ -169,6 +171,7 @@ export class TranzilaBillingService {
      * The BE proxy itself is in tranzila-billing.controller.ts. */
     const returnSuccessUrl = `${backendUrl}/billing/tranzila/return/success`;
     const returnFailedUrl = `${backendUrl}/billing/tranzila/return/failed`;
+    const frontendOrigin = this.resolveFrontendOrigin(input.frontendOrigin);
 
     const fields: Record<string, string> = {
       /* Core iframe params — names match Tranzila docs exactly.
@@ -217,6 +220,7 @@ export class TranzilaBillingService {
       [`${CORRELATION_PREFIX}kind`]: input.kind,
       [`${CORRELATION_PREFIX}plan_id`]: input.planId,
       [`${CORRELATION_PREFIX}cycle`]: input.cycle,
+      [`${CORRELATION_PREFIX}frontend_origin`]: frontendOrigin,
     };
 
     this.logger.log(
@@ -541,6 +545,20 @@ export class TranzilaBillingService {
 
   private isIframeKind(value: string | undefined): value is IframeKind {
     return value === 'trial' || value === 'update_card';
+  }
+
+  /** Pick the FE origin for iframe return redirects (postMessage same-origin). */
+  resolveFrontendOrigin(candidate?: string): string {
+    const configured = this.config.get('APP_PUBLIC_URL');
+    const fallback = configured ?? 'http://localhost:3000';
+    if (!candidate?.trim()) return fallback.replace(/\/$/, '');
+    const normalized = candidate.trim().replace(/\/$/, '');
+    const allowed = this.config.get('CORS_ORIGINS').map((o) => o.replace(/\/$/, ''));
+    if (allowed.includes(normalized)) return normalized;
+    this.logger.warn(
+      `frontendOrigin ${normalized} not in CORS_ORIGINS — using APP_PUBLIC_URL`,
+    );
+    return fallback.replace(/\/$/, '');
   }
 
   private putNonce(nonce: string, entry: NonceEntry): void {

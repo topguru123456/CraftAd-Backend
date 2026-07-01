@@ -5,8 +5,8 @@ import { PrismaService } from '../../../common/prisma/prisma.service';
 import { SubscriptionSyncService } from '../services/subscription-sync.service';
 import {
   classifyResponseCode,
-  TranzilaClassicClient,
 } from './tranzila-classic.client';
+import { TranzilaApiClient } from './tranzila-api.client';
 import {
   BillingCycle,
   getPlanAmount,
@@ -86,7 +86,7 @@ export class TranzilaRenewalRunner {
   constructor(
     private readonly config: AppConfigService,
     private readonly prisma: PrismaService,
-    private readonly tranzila: TranzilaClassicClient,
+    private readonly tranzilaApi: TranzilaApiClient,
     private readonly syncService: SubscriptionSyncService,
   ) {}
 
@@ -231,23 +231,20 @@ export class TranzilaRenewalRunner {
       throw err;
     }
 
-    /* Send the charge. Transport failure → transient (period_end
-     * untouched, next sweep retries; the audit row records the failure). */
-    const supplier = this.config.require('TRANZILA_TERMINAL_TOKEN');
-    const pw = this.config.require('TRANZILA_PW_TOKEN');
-    const expdate = formatExpdate(expmonth, expyear);
+    /* Server-side charge via Tranzila API v1 (same terminal that tokenized). */
+    const terminal = this.config.require('TRANZILA_TERMINAL_CHARGE');
+    const expMonthNum = Number.parseInt(expmonth, 10);
+    const expYearNum = normalizeExpYear(expyear);
 
     let charge;
     try {
-      charge = await this.tranzila.chargeWithToken({
-        supplier,
-        pw,
+      charge = await this.tranzilaApi.chargeWithToken({
+        terminalName: terminal,
         token,
         sum: chargeAmount,
-        currency: 1,
-        expdate,
-        tranmode: 'A',
-        credType: 1,
+        itemName: `${planId} ${cycle} renewal`,
+        expireMonth: expMonthNum,
+        expireYear: expYearNum,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -263,20 +260,20 @@ export class TranzilaRenewalRunner {
       return 'transient';
     }
 
-    const classification = classifyResponseCode(charge.responseCode);
-    const success = classification === 'success';
+    const classification = classifyResponseCode(charge.processorResponseCode);
+    const success = charge.ok && classification === 'success';
 
     await this.prisma.billingPaymentAttempt.update({
       where: { id: attemptId },
       data: {
         success,
-        responseCode: charge.responseCode || null,
-        tranzilaIndex: charge.index ?? null,
-        rawResponse: truncate(charge.raw, 4000),
+        responseCode: charge.processorResponseCode || null,
+        tranzilaIndex: charge.transactionId ?? null,
+        rawResponse: truncate(JSON.stringify(charge.raw), 4000),
         errorMessage: success
           ? null
           : truncate(
-              `Tranzila Response=${charge.responseCode || 'empty'} (${classification})`,
+              `Tranzila processor=${charge.processorResponseCode || 'empty'} (${classification})`,
               500,
             ),
       },
@@ -288,8 +285,8 @@ export class TranzilaRenewalRunner {
         userId,
         status: 'active',
         periodEndUnix: newPeriodEnd,
-        lastIndex: charge.index ?? null,
-        lastConfirmationCode: charge.confirmationCode ?? null,
+        lastIndex: charge.transactionId ?? null,
+        lastConfirmationCode: charge.authNumber ?? null,
       });
       if (discountActive) {
         await this.syncService.consumeRetentionDiscount({
@@ -300,7 +297,7 @@ export class TranzilaRenewalRunner {
       this.logger.log(
         `renewal success user=${userId} plan=${planId}/${cycle} ` +
           `amount=₪${chargeAmount}${discountActive ? ` (after ${discountPct}% retention discount)` : ''} ` +
-          `index=${charge.index ?? '-'} ` +
+          `txn=${charge.transactionId ?? '-'} ` +
           `new_period_end=${new Date(newPeriodEnd * 1000).toISOString()}`,
       );
       return 'success';
@@ -308,7 +305,7 @@ export class TranzilaRenewalRunner {
 
     if (classification === 'transient' || classification === 'unknown') {
       this.logger.warn(
-        `renewal transient user=${userId} code=${charge.responseCode || 'empty'}`,
+        `renewal transient user=${userId} code=${charge.processorResponseCode || 'empty'}`,
       );
       return 'transient';
     }
@@ -318,10 +315,10 @@ export class TranzilaRenewalRunner {
      * the next sweep retries after the user updates their card. */
     await this.syncService.markTranzilaPastDue({
       userId,
-      lastErrorCode: charge.responseCode || 'unknown',
+      lastErrorCode: charge.processorResponseCode || 'unknown',
     });
     this.logger.warn(
-      `renewal terminal user=${userId} code=${charge.responseCode} → past_due`,
+      `renewal terminal user=${userId} code=${charge.processorResponseCode} → past_due`,
     );
     return 'past_due';
   }
@@ -374,13 +371,10 @@ function readNumber(value: unknown): number | null {
   return null;
 }
 
-/* MMYY (4 digits). The notify callback stores month/year as 2-digit
- * strings; we just zero-pad defensively and slice in case Tranzila ever
- * starts sending 4-digit years. */
-function formatExpdate(month: string, year: string): string {
-  const m = month.padStart(2, '0').slice(-2);
-  const y = year.padStart(2, '0').slice(-2);
-  return `${m}${y}`;
+function normalizeExpYear(raw: string): number {
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n)) return 2030;
+  return n >= 2000 ? n : 2000 + n;
 }
 
 function truncate(value: string, max: number): string {

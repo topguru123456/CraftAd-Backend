@@ -7,6 +7,7 @@ import { BillingWebhookService } from './services/billing-webhook.service';
 import { StripeClientService } from './services/stripe-client.service';
 import { SubscriptionSyncService } from './services/subscription-sync.service';
 import { TranzilaClassicClient } from './tranzila/tranzila-classic.client';
+import { TranzilaApiClient } from './tranzila/tranzila-api.client';
 import { TranzilaBillingService } from './tranzila/tranzila-billing.service';
 import { TranzilaInvoicesService } from './tranzila/tranzila-invoices.service';
 import { TranzilaRenewalRunner } from './tranzila/tranzila-renewal-runner.service';
@@ -40,6 +41,7 @@ import { TranzilaRenewalRunner } from './tranzila/tranzila-renewal-runner.servic
     StripeClientService,
     SubscriptionSyncService,
     TranzilaClassicClient,
+    TranzilaApiClient,
     TranzilaBillingService,
     TranzilaRenewalRunner,
     TranzilaInvoicesService,

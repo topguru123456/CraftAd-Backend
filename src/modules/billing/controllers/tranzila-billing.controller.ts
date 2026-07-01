@@ -18,7 +18,7 @@ import {
   ApiOperation,
   ApiTags,
 } from '@nestjs/swagger';
-import { IsIn } from 'class-validator';
+import { IsIn, IsOptional, IsString } from 'class-validator';
 import type { Response } from 'express';
 import { AppConfigService } from '../../../config/config.service';
 import { CurrentUser } from '../../auth/decorators/current-user.decorator';
@@ -64,6 +64,11 @@ class InitIframeDto {
 
   @IsIn(IFRAME_KINDS as unknown as string[])
   kind!: (typeof IFRAME_KINDS)[number];
+
+  /** Browser origin where the iframe is embedded — must match CORS_ORIGINS. */
+  @IsOptional()
+  @IsString()
+  frontendOrigin?: string;
 }
 
 class ChangePlanDto {
@@ -109,6 +114,7 @@ export class TranzilaBillingController {
       planId: dto.planId,
       cycle: dto.cycle,
       kind: dto.kind,
+      frontendOrigin: dto.frontendOrigin,
     });
   }
 
@@ -165,7 +171,9 @@ export class TranzilaBillingController {
     if (outcome !== 'success' && outcome !== 'failed') {
       throw new BadRequestException(`Unknown outcome: ${outcome}`);
     }
-    const appUrl = this.config.require('APP_PUBLIC_URL');
+    const appUrl = this.tranzila.resolveFrontendOrigin(
+      body?.[`${CORRELATION_PREFIX}frontend_origin`],
+    );
     const kind = body?.[`${CORRELATION_PREFIX}kind`];
 
     let destination: string;

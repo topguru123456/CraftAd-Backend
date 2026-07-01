@@ -117,6 +117,8 @@ export const envSchema = z.object({
   TRANZILA_TERMINAL_TOKEN:  emptyAsUndefined(z.string().min(1).optional()),
   TRANZILA_PW_CHARGE:       emptyAsUndefined(z.string().min(1).optional()),
   TRANZILA_PW_TOKEN:        emptyAsUndefined(z.string().min(1).optional()),
+  TRANZILA_PUBLIC_KEY:      emptyAsUndefined(z.string().min(1).optional()),
+  TRANZILA_PRIVATE_KEY:     emptyAsUndefined(z.string().min(1).optional()),
   TRANZILA_ADMIN_SECRET:    emptyAsUndefined(z.string().min(16).optional()),
 
   // ── DEV BYPASS — REMOVE BEFORE PROD ──────────────────────────────
